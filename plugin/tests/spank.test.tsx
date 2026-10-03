@@ -30,9 +30,15 @@ function slapLine(level: number, peak: number) {
 // kit does not route a plugin's $.session.append to the test's hooks, so
 // each append fails here and the plugin's debug line for it carries the note.
 // `stored` is the plugin's store at the start; by default slaps reach Claude.
-// `world` is the disk: by default slapd is built and newer than its source.
+// `world` is the disk: by default slapd is built and newer than its source;
+// with `rawExits`, calibration's slapd writes that to stderr and exits.
 // This session is 'session-a'; the active-session file lives under TMPDIR.
-type World = { hasBinary?: boolean; swiftc?: { exitCode: number; stderr: string }; hasThresholdRow?: boolean }
+type World = {
+  hasBinary?: boolean
+  swiftc?: { exitCode: number; stderr: string }
+  hasThresholdRow?: boolean
+  rawExits?: string
+}
 
 async function harness($: Engine, on: On, stored: Record<string, unknown> = { claude: true }, world: World = {}) {
   mock.store(on, { total: 41, ...stored })
@@ -86,6 +92,10 @@ async function harness($: Engine, on: On, stored: Record<string, unknown> = { cl
   on('process.spawn', async function* ($, e) {
     seen.spawned.push([...e.argv])
     const source = e.argv.includes('--raw') ? streams.raw : streams.main
+    if (source === streams.raw && world.rawExits !== undefined) {
+      yield { stream: 'stderr' as const, text: world.rawExits }
+      return { value: { code: 1, signal: null } }
+    }
     try {
       for (;;) {
         const line = source.lines.shift()
@@ -555,16 +565,54 @@ describe('spank', () => {
     expect(seen.toasts.at(-1)).toMatch(/^Calibration failed: heard 0 of 3 knocks/)
   })
 
-  test('a calibration that hears nothing stops swallowing slaps', SLOW, async ($, on) => {
-    const { clock, seen, feed, slaps } = await harness($, on)
+  test('a calibration that hears nothing gives up and stops swallowing slaps', SLOW, async ($, on) => {
+    const { clock, seen, feed, feedRaw, slaps } = await harness($, on)
 
     await slaps('calibrate')
     await feed(slapLine(3, 0.3))
     expect(seen.toasts.filter(t => t.endsWith('L3'))).toEqual([])
 
     await clock.advance(19000)
+    expect(seen.toasts.at(-1)).toBe('Calibration failed: the sensor went quiet.')
     await feed(slapLine(3, 0.3))
     expect(seen.toasts.filter(t => t.endsWith('L3'))).toEqual(['いたっ！ L3'])
+
+    // The reader stops once its waiting pull lets go.
+    await feedRaw(0.01)
+    expect(seen.readersClosed).toBe(1)
+  })
+
+  test('a calibration whose slapd exits says why', SLOW, async ($, on) => {
+    const stderr = 'slapd: cannot open accelerometer (IOReturn 0xe00002c5); run with sudo\n'
+    const { clock, seen, slaps } = await harness($, on, { claude: true }, { rawExits: stderr })
+
+    await slaps('calibrate')
+    await clock.settle()
+
+    expect(seen.configured).toEqual([])
+    expect(seen.toasts.at(-1)).toBe(
+      'Calibration failed: the sensor reader stopped (slapd: cannot open accelerometer (IOReturn 0xe00002c5); run with sudo).',
+    )
+  })
+
+  test('a second /slaps calibrate while one runs is turned away', SLOW, async ($, on) => {
+    const { clock, seen, feedRaw, slaps } = await harness($, on)
+
+    await slaps('calibrate')
+    expect((await slaps('calibrate')).text).toBe('Already calibrating; wait for its result.')
+    expect(seen.spawned.filter(argv => argv.includes('--raw'))).toHaveLength(1)
+
+    await feedRaw(0.03)
+    await clock.advance(6000)
+    await feedRaw(0.3, 0.002, 0.2, 0.002, 0.25, 0.002)
+    await clock.advance(8000)
+    await feedRaw(0.002)
+    expect(seen.configured).toHaveLength(1)
+
+    // Once it is over, another may start.
+    expect((await slaps('calibrate')).text).toMatch(/^Calibrating\./)
+    await clock.settle()
+    expect(seen.spawned.filter(argv => argv.includes('--raw'))).toHaveLength(2)
   })
 
   test('/slaps mute keeps the laptop quiet', SLOW, async ($, on) => {

@@ -26,8 +26,8 @@ const FACE_TEXT_COLUMNS = 24
 const CALIBRATE_TYPING_MS = 6000
 const CALIBRATE_KNOCKING_MS = 8000
 const CALIBRATE_FLOOR = 0.025
-// A calibration older than this is over, whatever its reader is doing, so a
-// stalled one cannot keep swallowing slaps.
+// How long a calibration waits on its reader in all: past this, a reader gone
+// quiet is given up on, so it cannot keep swallowing slaps.
 const CALIBRATE_STALE_MS = CALIBRATE_TYPING_MS + CALIBRATE_KNOCKING_MS + 5000
 // How long /slaps image shows its test picture.
 const PROBE_MS = 10000
@@ -89,7 +89,7 @@ let burst: Slap[] = []
 let burstTimer: Timer | undefined
 let playing: { level: number; stop: AbortController } | undefined
 let faceTimer: Timer | undefined
-let calibration: { step: 'typing' | 'knocking'; startedAt: number } | undefined
+let calibration: { step: 'typing' | 'knocking' } | undefined
 let sensorStatus: string | undefined
 // /slaps image's picture (PNG, base64), and the band's id for blitting it.
 let probePng: string | undefined
@@ -228,34 +228,57 @@ function report($: EngineInterface, text: string) {
 
 // /slaps calibrate: a slapd of its own (--raw: the loudest shake every 0.1s)
 // listens to typing, then to knocks, and the sensitivity setting goes between
-// them. Slaps are ignored meanwhile. Steps follow the clock as readings
-// arrive, and leaving the loop stops that slapd.
+// them. Slaps are ignored meanwhile, and one runs at a time. Steps follow the
+// clock as readings arrive, and leaving the loop stops that slapd.
 async function calibrate($: EngineInterface) {
-  const startedAt = await $.clock.now()
-  const run = { step: 'typing' as 'typing' | 'knocking', startedAt }
+  // Set before any await, so a /slaps calibrate right behind this one sees it.
+  const run = { step: 'typing' as 'typing' | 'knocking' }
   calibration = run
+  // reader.return() waits behind a pull still waiting for a line, so each
+  // pull races the backstop instead.
+  let giveUp = () => {}
+  const quiet = new Promise<'quiet'>(resolve => (giveUp = () => resolve('quiet')))
+  const backstop = $.clock.after(CALIBRATE_STALE_MS, () => giveUp())
   const heard = { typing: [] as number[], knocking: [] as number[] }
-  $.ui.status(`spank: calibrating 1/2: type anything for ${CALIBRATE_TYPING_MS / 1000}s, without pressing Enter`)
-
-  const reader = $.process.spawn({ argv: [`${$.plugin.root}/bin/slapd`, '--raw', '--threshold', '100'] })
-  const backstop = $.clock.after(CALIBRATE_STALE_MS, () => void reader.return({ code: null, signal: null }))
-  const lines = lineSplitter()
   let failure: string | undefined
   try {
-    reading: for await (const { stream, text } of reader) {
-      if (stream !== 'stdout') continue
-      for (const line of lines(text)) {
-        const parsed = parseLine(line)
-        if (parsed?.type !== 'raw') continue
-        const elapsed = (await $.clock.now()) - startedAt
-        if (elapsed >= CALIBRATE_TYPING_MS + CALIBRATE_KNOCKING_MS) break reading
-        if (elapsed >= CALIBRATE_TYPING_MS && run.step === 'typing') {
-          run.step = 'knocking'
-          $.ui.status(`spank: calibrating 2/2: knock on the desk 3 times (${CALIBRATE_KNOCKING_MS / 1000}s)`)
-          $.ui.toast('Now knock on the desk 3 times', { timeoutMs: CALIBRATE_KNOCKING_MS })
+    const startedAt = await $.clock.now()
+    $.ui.status(`spank: calibrating 1/2: type anything for ${CALIBRATE_TYPING_MS / 1000}s, without pressing Enter`)
+    const reader = $.process.spawn({ argv: [`${$.plugin.root}/bin/slapd`, '--raw', '--threshold', '100'] })
+    const lines = lineSplitter()
+    let lastError = ''
+    try {
+      reading: for (;;) {
+        const pulled = await Promise.race([reader.next(), quiet])
+        if (pulled === 'quiet') {
+          failure = 'the sensor went quiet'
+          break
         }
-        heard[run.step].push(parsed.peak)
+        if (pulled.done === true) {
+          failure = `the sensor reader stopped (${lastError || 'slapd exited'})`
+          break
+        }
+        const { stream, text } = pulled.value
+        if (stream === 'stderr') {
+          lastError = text.trim().split('\n').pop() ?? lastError
+          continue
+        }
+        for (const line of lines(text)) {
+          const parsed = parseLine(line)
+          if (parsed?.type !== 'raw') continue
+          const elapsed = (await $.clock.now()) - startedAt
+          if (elapsed >= CALIBRATE_TYPING_MS + CALIBRATE_KNOCKING_MS) break reading
+          if (elapsed >= CALIBRATE_TYPING_MS && run.step === 'typing') {
+            run.step = 'knocking'
+            $.ui.status(`spank: calibrating 2/2: knock on the desk 3 times (${CALIBRATE_KNOCKING_MS / 1000}s)`)
+            $.ui.toast('Now knock on the desk 3 times', { timeoutMs: CALIBRATE_KNOCKING_MS })
+          }
+          heard[run.step].push(parsed.peak)
+        }
       }
+    } finally {
+      // Stops slapd; a pull still waiting holds this until slapd writes.
+      reader.return({ code: null, signal: null }).catch(() => {})
     }
   } catch (error) {
     failure = `the sensor could not be read (${String(error)})`
@@ -301,10 +324,7 @@ async function saveThreshold($: EngineInterface, threshold: number): Promise<str
 }
 
 async function onSlap($: EngineInterface, slap: Slap) {
-  if (calibration !== undefined) {
-    if ((await $.clock.now()) - calibration.startedAt < CALIBRATE_STALE_MS) return
-    calibration = undefined
-  }
+  if (calibration !== undefined) return
   if (!(await isActive($))) return
 
   const n = await update($, count, c => c + 1)
@@ -484,6 +504,7 @@ export const register: Register = (on, options) => {
       return { text: arg === 'mute' ? 'Laptop voice off.' : 'Laptop voice on.' }
     }
     if (arg === 'calibrate') {
+      if (calibration !== undefined) return { text: 'Already calibrating; wait for its result.' }
       void calibrate($)
       return {
         text:
