@@ -8,6 +8,10 @@
 //   ./slapd                      # detect hits
 //   ./slapd --raw                # print live magnitude, to pick a threshold
 //   ./slapd --threshold 0.08     # less sensitive
+//
+// Only one slapd per user reads the sensor at a time (a lock file), so several
+// Claude Code sessions do not all react to the same slap: the others print
+// {"type":"standby"} and wait their turn.
 
 import Foundation
 import IOKit
@@ -21,6 +25,7 @@ struct Config {
     var cooldown = 0.35    // s between two hits
     var window = 0.06      // s after the trigger to find the peak
     var raw = false
+    var lock: String? = "/tmp/spank-claude-\(getuid()).lock"
 }
 
 func parseArgs() -> Config {
@@ -32,8 +37,10 @@ func parseArgs() -> Config {
         case "--threshold": c.threshold = Double(args.popFirst() ?? "") ?? c.threshold
         case "--cooldown": c.cooldown = (Double(args.popFirst() ?? "") ?? c.cooldown * 1000) / 1000
         case "--raw": c.raw = true
+        case "--lock": c.lock = args.popFirst()
+        case "--no-lock": c.lock = nil
         case "-h", "--help":
-            print("usage: slapd [--out FILE] [--threshold G] [--cooldown MS] [--raw]")
+            print("usage: slapd [--out FILE] [--threshold G] [--cooldown MS] [--raw] [--lock FILE | --no-lock]")
             exit(0)
         default:
             fail("unknown argument: \(a)")
@@ -229,6 +236,20 @@ func int32LE(_ p: UnsafeMutablePointer<UInt8>, _ o: Int) -> Int32 {
 let cfg = parseArgs()
 
 let sink = Sink(path: cfg.out)
+
+// Waits until this is the one slapd reading the sensor. The kernel drops the
+// lock when its holder exits, however it exits, so no stale lock is left.
+if let path = cfg.lock {
+    let fd = open(path, O_CREAT | O_RDWR, 0o644)
+    if fd < 0 {
+        warn("cannot open \(path); reading the sensor without the lock")
+    } else if flock(fd, LOCK_EX | LOCK_NB) != 0 {
+        sink.emit(["type": "standby", "ts": nowMs()], toFile: false)
+        warn("another slapd is reading the sensor; waiting for it to exit")
+        flock(fd, LOCK_EX)
+    }
+    // fd stays open, holding the lock, for the life of the process.
+}
 let detector = Detector(cfg: cfg, sink: sink)
 
 wakeSensorDrivers()

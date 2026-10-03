@@ -66,6 +66,7 @@ Uninstall: `claude plugin uninstall spank@spank-claude`.
 | Command              | Does                                                        |
 | -------------------- | ----------------------------------------------------------- |
 | `/slaps`             | Your score: this session, all time, and the last hit.       |
+| `/slaps calibrate`   | Type for 6 s, knock 3 times; it picks the sensitivity.      |
 | `/slaps mute`        | Silences her. The faces still judge you.                    |
 | `/slaps unmute`      | She's back.                                                 |
 | `/slaps claude on`   | Slaps reach Claude, and level 4+ stops its running turn.    |
@@ -83,6 +84,11 @@ as one note with your next message, so it gets the whole story at once.
 A level 4+ slap while Claude is working stops the turn on the spot. Fair
 warning: a shell command Claude already started keeps running in the
 background; the slap stops Claude, not the command.
+
+### Several sessions
+
+Only one Claude Code session reacts to a slap; the others show
+`spank: standby` and take over when that one closes. One laptop, one victim.
 
 ## Faces and terminals
 
@@ -105,9 +111,9 @@ Open `/config` in Claude Code (or `/plugin configure spank@spank-claude`):
 | Face size               | large   | `large`, `medium`, `small`, or `off`.                     |
 | Voice volume            | 1       | 0 is silent, up to 4 for open-plan offices.               |
 
-Changes apply right away. Not sure what sensitivity to pick? From a clone,
-`make raw` prints the live shake 10 times a second: type, knock on the desk,
-and pick a number between the two.
+Changes apply right away. Not sure what sensitivity to pick? Run
+`/slaps calibrate`: type normally for 6 seconds, then knock on the desk 3
+times, and it sets the sensitivity between the two for you.
 
 ## How it works
 
@@ -135,7 +141,7 @@ git clone https://github.com/slima4/spank-claude && cd spank-claude
 claude --plugin-dir "$PWD/plugin"
 
 make slapd                         # build the sensor reader by hand
-make raw                           # watch the live shake
+make raw                           # watch the live shake (ignores the lock)
 make faces                         # rebuild face cells from assets/faces/*.png
 claude plugin validate .           # the marketplace and the plugin
 claude plugin test plugin          # the tests
@@ -147,6 +153,10 @@ Installed copies are kept per version, so bump `version` in
 Swap in your own faces (`assets/faces/level_<1-5>.png`) and voices
 (`plugin/assets/voices/level_<1-5>.mp3`), then update the captions in
 `plugin/hooks/register.tsx`.
+
+## License
+
+[MIT](LICENSE). Slap responsibly.
 
 ## Safety notes
 

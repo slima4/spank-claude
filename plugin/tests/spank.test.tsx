@@ -13,6 +13,10 @@ const BAND = {
 const CLIP_2 = 'assets/voices/level_2.mp3'
 const CLIP_4 = 'assets/voices/level_4.mp3'
 
+function raw(peak: number) {
+  return JSON.stringify({ type: 'raw', peak, noise: 0.001 })
+}
+
 function slapLine(level: number, peak: number) {
   return JSON.stringify({ type: 'slap', ts: 1791041867213, peak, level })
 }
@@ -23,7 +27,7 @@ function slapLine(level: number, peak: number) {
 // each append fails here and the plugin's debug line for it carries the note.
 // `stored` is the plugin's store at the start; by default slaps reach Claude.
 // `world` is the disk: by default slapd is built and newer than its source.
-type World = { hasBinary?: boolean; swiftc?: { exitCode: number; stderr: string } }
+type World = { hasBinary?: boolean; swiftc?: { exitCode: number; stderr: string }; hasThresholdRow?: boolean }
 
 async function harness($: Engine, on: On, stored: Record<string, unknown> = { claude: true }, world: World = {}) {
   mock.store(on, { total: 41, ...stored })
@@ -37,6 +41,7 @@ async function harness($: Engine, on: On, stored: Record<string, unknown> = { cl
     ran: [] as string[][],
     spawned: [] as string[][],
     gains: [] as number[],
+    configured: [] as { key: string; value: unknown }[],
   }
 
   let hasBinary = world.hasBinary ?? true
@@ -94,6 +99,17 @@ async function harness($: Engine, on: On, stored: Record<string, unknown> = { cl
     const note = /could not tell Claude "(.*)":/s.exec(e.text)?.[1]
     if (note !== undefined) seen.notes.push(note)
     return { value: undefined }
+  })
+  // The /config rows: the engine's own, then this plugin's sensitivity.
+  on('config.list', () => ({
+    value: [
+      { key: 'theme', label: 'Theme', kind: 'choice' as const, value: 'dark', provider: { plugin: 'core', tier: 'core' as const }, isLocked: false },
+      { key: 'spank.threshold', label: 'Slap sensitivity (g)', kind: 'number' as const, value: 0.05, provider: { plugin: 'spank', tier: 'user' as const }, isLocked: false },
+    ].slice(0, world.hasThresholdRow === false ? 1 : 2),
+  }))
+  on('config.set', ($, e) => {
+    seen.configured.push({ key: e.key, value: e.value })
+    return { value: e.value }
   })
   on('turn.abort', ($, e) => {
     seen.aborted.push(e.turnId)
@@ -328,12 +344,12 @@ describe('spank', () => {
 
   test('settings: sensitivity reaches slapd', { ...SLOW, options: { threshold: 0.12 } }, async ($, on) => {
     const { seen } = await harness($, on)
-    expect(seen.spawned[0]?.slice(1)).toEqual(['--threshold', '0.12'])
+    expect(seen.spawned[0]?.slice(1)).toEqual(['--raw', '--threshold', '0.12'])
   })
 
   test('settings: by default slapd gets the manifest default', SLOW, async ($, on) => {
     const { seen } = await harness($, on)
-    expect(seen.spawned[0]?.slice(1)).toEqual(['--threshold', '0.05'])
+    expect(seen.spawned[0]?.slice(1)).toEqual(['--raw', '--threshold', '0.05'])
   })
 
   test('settings: a higher stop level lets a level 4 slap through', { ...SLOW, options: { stop_level: 5 } }, async ($, on) => {
@@ -375,6 +391,59 @@ describe('spank', () => {
       await ui.unmount()
     })
   }
+
+  test('behind another session\'s slapd, the status says standby until it takes over', SLOW, async ($, on) => {
+    const { seen, feed } = await harness($, on)
+
+    await feed('{"type":"standby","ts":1}')
+    expect(seen.statuses.at(-1)).toBe('spank: standby (another Claude session is reacting to slaps)')
+    await feed('{"type":"start","ts":2}')
+    expect(seen.statuses.at(-1)).toBe('spank: armed')
+  })
+
+  test('/slaps calibrate sets the sensitivity between typing and knocks', SLOW, async ($, on) => {
+    const { clock, seen, feed, slaps } = await harness($, on)
+
+    expect((await slaps('calibrate')).text).toMatch(/^Calibrating\./)
+    await feed(raw(0.004), raw(0.02), raw(0.012), raw(0.016))
+    await clock.advance(6000)
+    expect(seen.statuses.at(-1)).toBe('spank: calibrating 2/2: knock on the desk 3 times')
+
+    // Three knocks, the second split across two moments; a slap meanwhile is ignored.
+    await feed(raw(0.003), raw(0.3), raw(0.004), raw(0.12), raw(0.2), raw(0.003), slapLine(3, 0.3), raw(0.25), raw(0.002))
+    await clock.advance(8000)
+
+    // sqrt(0.02 * 0.2) = 0.063
+    expect(seen.configured).toEqual([{ key: 'spank.threshold', value: 0.063 }])
+    expect(seen.toasts.at(-1)).toMatch(/^Sensitivity set to 0\.063g/)
+    expect(seen.played).toEqual([])
+  })
+
+  test('/slaps calibrate says so when it cannot save the sensitivity', SLOW, async ($, on) => {
+    const { clock, seen, feed, slaps } = await harness($, on, { claude: true }, { hasThresholdRow: false })
+
+    await slaps('calibrate')
+    await feed(raw(0.02))
+    await clock.advance(6000)
+    await feed(raw(0.3), raw(0.002), raw(0.2), raw(0.002), raw(0.25))
+    await clock.advance(8000)
+
+    expect(seen.configured).toEqual([])
+    expect(seen.toasts.at(-1)).toMatch(/could not save it: no sensitivity row in \/config/)
+  })
+
+  test('/slaps calibrate gives up when the knocks are no louder than typing', SLOW, async ($, on) => {
+    const { clock, seen, feed, slaps } = await harness($, on)
+
+    await slaps('calibrate')
+    await feed(raw(0.03), raw(0.04))
+    await clock.advance(6000)
+    await feed(raw(0.05), raw(0.002), raw(0.045))
+    await clock.advance(8000)
+
+    expect(seen.configured).toEqual([])
+    expect(seen.toasts.at(-1)).toMatch(/^Calibration failed: the knocks were not much louder than typing/)
+  })
 
   test('/slaps mute keeps the laptop quiet', SLOW, async ($, on) => {
     const { seen, feed, slaps } = await harness($, on)

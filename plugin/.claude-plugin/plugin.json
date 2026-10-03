@@ -1,9 +1,10 @@
 {
   "name": "spank",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Slap your MacBook and Claude Code feels it: a face, a yelp, and optionally a stopped turn",
   "author": { "name": "Slim", "url": "https://github.com/slima4" },
   "repository": "https://github.com/slima4/spank-claude",
+  "license": "MIT",
   "types": "./types/index.d.ts",
   "userConfig": {
     "threshold": {

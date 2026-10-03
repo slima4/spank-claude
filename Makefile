@@ -8,7 +8,7 @@ $(SLAPD): plugin/slapd/main.swift
 slapd: $(SLAPD)
 
 raw: $(SLAPD)
-	$(SLAPD) --raw
+	$(SLAPD) --raw --no-lock
 
 # Terminal cells for the faces drawn above the prompt.
 faces: plugin/hooks/faces.ts
