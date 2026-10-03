@@ -1,0 +1,15 @@
+{
+  "name": "spank-claude",
+  "description": "Slap your MacBook; Claude Code reacts.",
+  "owner": {
+    "name": "Slim",
+    "url": "https://github.com/slima4"
+  },
+  "plugins": [
+    {
+      "name": "spank",
+      "source": "./plugin",
+      "description": "Slap your MacBook and Claude Code feels it: a face, a yelp, and optionally a stopped turn"
+    }
+  ]
+}

@@ -1,6 +1,41 @@
 {
   "name": "spank",
-  "version": "0.1.0",
-  "description": "Counts hits on the MacBook (or the table under it) through its built-in accelerometer",
-  "types": "./types/index.d.ts"
+  "version": "0.2.0",
+  "description": "Slap your MacBook and Claude Code feels it: a face, a yelp, and optionally a stopped turn",
+  "author": { "name": "Slim", "url": "https://github.com/slima4" },
+  "repository": "https://github.com/slima4/spank-claude",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "threshold": {
+      "type": "number",
+      "title": "Slap sensitivity (g)",
+      "description": "The smallest shake that counts as a slap, in g. Raise it if typing counts as slapping; lower it if desk knocks are missed.",
+      "default": 0.05,
+      "min": 0.01,
+      "max": 1
+    },
+    "stop_level": {
+      "type": "number",
+      "title": "Level that stops Claude",
+      "description": "With /slaps claude on, a slap of this level (1-5) or harder stops Claude's running turn.",
+      "default": 4,
+      "min": 1,
+      "max": 5
+    },
+    "face_size": {
+      "type": "string",
+      "title": "Face size",
+      "description": "How big the face above the prompt may get; it shrinks to fit the terminal either way.",
+      "options": ["large", "medium", "small", "off"],
+      "default": "large"
+    },
+    "volume": {
+      "type": "number",
+      "title": "Voice volume",
+      "description": "0 is silent, 1 is as recorded, up to 4.",
+      "default": 1,
+      "min": 0,
+      "max": 4
+    }
+  }
 }

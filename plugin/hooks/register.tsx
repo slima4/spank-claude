@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, Timer } from 'claude-code'
+import type { EngineInterface, PluginOptions, Register, Timer } from 'claude-code'
 
 import type { FaceShown, Slap } from '../types'
 import { FACES } from './faces'
@@ -14,11 +14,10 @@ const probe = atom({ plugin: 'spank', key: 'probe' } as const, false)
 
 // Slaps this close together during a turn reach Claude as one note.
 const BURST_MS = 1500
-// From this level up, a slap stops Claude's running turn.
-const STOP_LEVEL = 4
-// How long a slap's face stays above the prompt, and how tall it may get.
+// How long a slap's face stays above the prompt.
 const FACE_MS = 3000
-const FACE_MAX_ROWS = 16
+// The tallest face per face_size setting, in rows; 0 draws none.
+const FACE_ROWS: Record<string, number> = { large: 16, medium: 12, small: 8, off: 0 }
 // Room the face leaves beside it for its line.
 const FACE_TEXT_COLUMNS = 24
 // How long /slaps image shows its test picture.
@@ -69,10 +68,29 @@ let faceTimer: Timer | undefined
 let probePng: string | undefined
 let bandRequestId: string | undefined
 
+// The config menu's values (the manifest's userConfig). A change there reloads
+// the module, so register reads them afresh.
+type Settings = { threshold: number; stopLevel: number; faceRows: number; volume: number }
+let settings: Settings = { threshold: 0.05, stopLevel: 4, faceRows: 16, volume: 1 }
+
+function readSettings(options: PluginOptions): Settings {
+  const number = (key: string, fallback: number) => {
+    const value = options[key]
+    return typeof value === 'number' && Number.isFinite(value) ? value : fallback
+  }
+  const faceSize = options.face_size
+  return {
+    threshold: number('threshold', 0.05),
+    stopLevel: number('stop_level', 4),
+    faceRows: typeof faceSize === 'string' ? (FACE_ROWS[faceSize] ?? 16) : 16,
+    volume: number('volume', 1),
+  }
+}
+
 // The largest face for this level that fits the band, if any does.
 function faceArt(level: number, maxRows: number, columns: number) {
   const arts = FACES[Math.min(Math.max(level, 1), 5) - 1] ?? []
-  return arts.findLast(art => art.rows <= Math.min(maxRows, FACE_MAX_ROWS) && art.columns + FACE_TEXT_COLUMNS <= columns)
+  return arts.findLast(art => art.rows <= Math.min(maxRows, settings.faceRows) && art.columns + FACE_TEXT_COLUMNS <= columns)
 }
 
 async function showFace($: EngineInterface, shown: FaceShown) {
@@ -84,12 +102,13 @@ async function showFace($: EngineInterface, shown: FaceShown) {
 // Plays the level's clip. A harder slap cuts off a softer clip still
 // playing; one no harder than it is skipped, so a burst stays one voice.
 function voice($: EngineInterface, level: number) {
+  if (settings.volume <= 0) return
   if (playing !== undefined && playing.level >= level) return
   playing?.stop.abort()
   const clip = { level, stop: new AbortController() }
   playing = clip
   $.audio
-    .play({ asset: `assets/voices/level_${level}.mp3` }, { signal: clip.stop.signal })
+    .play({ asset: `assets/voices/level_${level}.mp3` }, { signal: clip.stop.signal, gain: settings.volume })
     .catch(() => {})
     .finally(() => {
       if (playing === clip) playing = undefined
@@ -124,7 +143,7 @@ async function onSlap($: EngineInterface, slap: Slap) {
   // Telling Claude and stopping its turn are off unless /slaps claude on.
   const isClaudeOn = (await $.store.get('claude')) === true
   const turnId = await read($, turn)
-  const isStopping = isClaudeOn && turnId !== null && slap.level >= STOP_LEVEL
+  const isStopping = isClaudeOn && turnId !== null && slap.level >= settings.stopLevel
 
   $.ui.status(`spank: ${n} this session, last L${slap.level} (${slap.peak.toFixed(2)}g)`)
 
@@ -149,8 +168,41 @@ async function onSlap($: EngineInterface, slap: Slap) {
 
 // Runs slapd for the module's life: it prints one JSON line per hit, and
 // leaving this loop (a reload, the session ending) kills it.
+// slapd ships as Swift source and is built on first run (and again when its
+// source is newer than the build), so installing needs only Xcode's command
+// line tools. Builds to a temporary name and renames, so two sessions starting
+// together never run a half-written binary. Resolves an error, or undefined.
+async function buildSlapd($: EngineInterface): Promise<string | undefined> {
+  const source = `${$.plugin.root}/slapd/main.swift`
+  const binary = `${$.plugin.root}/bin/slapd`
+  if ((await $.fs.exists(binary)) && (await $.fs.stat(binary)).mtimeMs >= (await $.fs.stat(source)).mtimeMs) {
+    return undefined
+  }
+
+  $.ui.status('spank: building the sensor reader (first run, about 20s)')
+  const temporary = `${binary}.${await $.clock.now()}.tmp`
+  await $.process.run(['/bin/mkdir', '-p', `${$.plugin.root}/bin`])
+  const built = await $.process.run(['/usr/bin/swiftc', '-O', '-swift-version', '5', '-o', temporary, source], {
+    timeoutMs: 300_000,
+  })
+  if (built.exitCode !== 0) {
+    if (/xcode-select|developer path|CommandLineTools/i.test(built.stderr)) {
+      return 'needs Xcode command line tools: run xcode-select --install'
+    }
+    return `build failed: ${built.stderr.trim().split('\n').pop() ?? `swiftc exited ${built.exitCode}`}`
+  }
+  const moved = await $.process.run(['/bin/mv', '-f', temporary, binary])
+  return moved.exitCode === 0 ? undefined : `build failed: ${moved.stderr.trim()}`
+}
+
 async function listen($: EngineInterface) {
-  const slapd = $.process.spawn({ argv: [`${$.plugin.root}/bin/slapd`] })
+  const buildError = await buildSlapd($).catch(error => `build failed: ${String(error)}`)
+  if (buildError !== undefined) {
+    $.ui.status(`spank: sensor off (${buildError})`)
+    return
+  }
+
+  const slapd = $.process.spawn({ argv: [`${$.plugin.root}/bin/slapd`, '--threshold', String(settings.threshold)] })
   let pending = ''
   let lastError = ''
 
@@ -176,7 +228,8 @@ async function listen($: EngineInterface) {
   $.ui.status(`spank: sensor off (${lastError || 'slapd exited'})`)
 }
 
-export const register: Register = on => {
+export const register: Register = (on, options) => {
+  settings = readSettings(options)
   burst = []
   cancelBurstTimer()
   playing?.stop.abort()

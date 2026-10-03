@@ -36,31 +36,30 @@ iOS app, minus the phone, plus an AI that can take a hint.
   nothing, no matter how hard you hit it. Please don't test this.
 - macOS 27. It reads the sensor without `sudo` there; older releases may want
   root (untested).
-- Xcode Command Line Tools (`xcode-select --install`), for `swiftc`.
+- Xcode Command Line Tools (`xcode-select --install`). The plugin builds its
+  little sensor reader from Swift source on first run, so nothing precompiled
+  ships in the repo.
 - Claude Code with plugin function hooks (built and tested on 2.1.288; that API
   is early access and may move).
 
 ## Install
 
+Two commands, no cloning:
+
 ```sh
-git clone https://github.com/slima4/spank-claude
-cd spank-claude
-make install                      # builds slapd, puts it in plugin/bin
-claude --plugin-dir "$PWD/plugin"
+claude plugin marketplace add slima4/spank-claude
+claude plugin install spank@spank-claude
 ```
 
-The status line under the prompt says `spank: armed`. Go on. Slap it.
+(or the same from inside Claude Code: `/plugin marketplace add slima4/spank-claude`,
+then `/plugin install spank@spank-claude`.)
 
-To load it in every session without the flag, add the folder to the `env` block
-of `~/.claude/settings.json`:
+Start Claude Code. The first session builds the sensor reader (the status line
+says `spank: building the sensor reader`, about 20 seconds), then shows
+`spank: armed`. Go on. Slap it.
 
-```json
-{
-  "env": {
-    "CLAUDE_CODE_PLUGIN_DIRS": "/absolute/path/to/spank-claude/plugin"
-  }
-}
-```
+Updates: `claude plugin update spank@spank-claude`, then restart Claude Code.
+Uninstall: `claude plugin uninstall spank@spank-claude`.
 
 ## Commands
 
@@ -95,18 +94,20 @@ Real, full-resolution pictures need a terminal with kitty graphics Unicode
 placeholders, which today means Ghostty or kitty. Run `/slaps image` to see what
 yours can do. Warp and Terminal.app currently can't (not our fault, we checked).
 
-## Tuning
+## Settings
 
-If typing counts as slapping, or the desk doesn't register, look at the raw
-numbers first:
+Open `/config` in Claude Code (or `/plugin configure spank@spank-claude`):
 
-```sh
-make raw      # prints the live shake, 10 times a second; ctrl-c to stop
-```
+| Setting                 | Default | What it does                                              |
+| ----------------------- | ------- | --------------------------------------------------------- |
+| Slap sensitivity (g)    | 0.05    | Smallest shake that counts. Typing counts? Raise it.      |
+| Level that stops Claude | 4       | With `/slaps claude on`, this level or harder stops a turn. |
+| Face size               | large   | `large`, `medium`, `small`, or `off`.                     |
+| Voice volume            | 1       | 0 is silent, up to 4 for open-plan offices.               |
 
-Type, knock on the desk, slap the palm rest, and pick a threshold between your
-typing and your knock. Then pass it to `slapd` in `plugin/hooks/register.tsx`
-(`argv: [..., '--threshold', '0.08']`) and save; the plugin reloads.
+Changes apply right away. Not sure what sensitivity to pick? From a clone,
+`make raw` prints the live shake 10 times a second: type, knock on the desk,
+and pick a number between the two.
 
 ## How it works
 
@@ -126,12 +127,22 @@ typing and your knock. Then pass it to `slapd` in `plugin/hooks/register.tsx`
 
 ## Development
 
+Run straight from a clone (uninstall the marketplace copy first, or you get
+two of her):
+
 ```sh
-make install                       # rebuild slapd into the plugin
+git clone https://github.com/slima4/spank-claude && cd spank-claude
+claude --plugin-dir "$PWD/plugin"
+
+make slapd                         # build the sensor reader by hand
+make raw                           # watch the live shake
 make faces                         # rebuild face cells from assets/faces/*.png
-claude plugin validate plugin      # what the engine will load
+claude plugin validate .           # the marketplace and the plugin
 claude plugin test plugin          # the tests
 ```
+
+Installed copies are kept per version, so bump `version` in
+`plugin/.claude-plugin/plugin.json` when you ship a change.
 
 Swap in your own faces (`assets/faces/level_<1-5>.png`) and voices
 (`plugin/assets/voices/level_<1-5>.mp3`), then update the captions in

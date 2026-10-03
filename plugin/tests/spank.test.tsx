@@ -2,6 +2,14 @@ import type { On } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
+// The band above the prompt, roomy enough for the largest face.
+const BAND = {
+  plugin: 'spank',
+  surface: 'terminal' as const,
+  component: 'AbovePrompt' as const,
+  props: { hasSurvey: false, isWorking: false, maxRows: 30, bodyColumns: 120, scroll: { offset: 0, bodyRows: 30 }, view: {} },
+}
+
 const CLIP_2 = 'assets/voices/level_2.mp3'
 const CLIP_4 = 'assets/voices/level_4.mp3'
 
@@ -14,7 +22,10 @@ function slapLine(level: number, peak: number) {
 // kit does not route a plugin's $.session.append to the test's hooks, so
 // each append fails here and the plugin's debug line for it carries the note.
 // `stored` is the plugin's store at the start; by default slaps reach Claude.
-async function harness($: Engine, on: On, stored: Record<string, unknown> = { claude: true }) {
+// `world` is the disk: by default slapd is built and newer than its source.
+type World = { hasBinary?: boolean; swiftc?: { exitCode: number; stderr: string } }
+
+async function harness($: Engine, on: On, stored: Record<string, unknown> = { claude: true }, world: World = {}) {
   mock.store(on, { total: 41, ...stored })
   const clock = mock.clock(on)
   const seen = {
@@ -23,7 +34,23 @@ async function harness($: Engine, on: On, stored: Record<string, unknown> = { cl
     played: [] as string[],
     aborted: [] as string[],
     notes: [] as string[],
+    ran: [] as string[][],
+    spawned: [] as string[][],
+    gains: [] as number[],
   }
+
+  let hasBinary = world.hasBinary ?? true
+  on('fs.exists', ($, e) => ({ value: e.path.endsWith('/bin/slapd') ? hasBinary : true }))
+  on('fs.stat', ($, e) => ({
+    value: { kind: 'file' as const, size: 1, isLink: false, mtimeMs: e.path.endsWith('/bin/slapd') ? 2 : 1 },
+  }))
+  on('process.run', ($, e) => {
+    seen.ran.push([...e.argv])
+    const isSwiftc = e.argv[0] === '/usr/bin/swiftc'
+    const result = isSwiftc ? (world.swiftc ?? { exitCode: 0, stderr: '' }) : { exitCode: 0, stderr: '' }
+    if (e.argv[0] === '/bin/mv') hasBinary = true
+    return { value: { ...result, stdout: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
 
   // Held clips play until the test releases them.
   let holdClips = false
@@ -31,7 +58,8 @@ async function harness($: Engine, on: On, stored: Record<string, unknown> = { cl
 
   const lines: string[] = []
   let wake = () => {}
-  on('process.spawn', async function* () {
+  on('process.spawn', async function* ($, e) {
+    seen.spawned.push([...e.argv])
     for (;;) {
       const line = lines.shift()
       if (line !== undefined) yield { stream: 'stdout' as const, text: line + '\n' }
@@ -53,6 +81,7 @@ async function harness($: Engine, on: On, stored: Record<string, unknown> = { cl
   })
   on('audio.play', ($, e) => {
     if (e.clip.asset !== undefined) seen.played.push(e.clip.asset)
+    seen.gains.push(e.gain ?? 1)
     if (holdClips) return new Promise(resolve => held.push(() => resolve({ value: undefined })))
     return { value: undefined }
   })
@@ -72,6 +101,8 @@ async function harness($: Engine, on: On, stored: Record<string, unknown> = { cl
   })
 
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  // Let the start-up work (build check, slapd) run.
+  await clock.settle()
 
   return {
     clock,
@@ -269,6 +300,81 @@ describe('spank', () => {
 
     expect(seen.played).toEqual([CLIP_2, CLIP_4])
   })
+
+  test('the first run builds slapd from source, then starts it', SLOW, async ($, on) => {
+    const { seen } = await harness($, on, {}, { hasBinary: false })
+
+    expect(seen.ran.map(argv => argv[0])).toEqual(['/bin/mkdir', '/usr/bin/swiftc', '/bin/mv'])
+    expect(seen.ran[1]).toContain('-O')
+    expect(seen.ran[1]?.at(-1)).toMatch(/\/slapd\/main\.swift$/)
+    expect(seen.statuses[0]).toMatch(/building the sensor reader/)
+    expect(seen.spawned).toHaveLength(1)
+  })
+
+  test('a built slapd starts with no build', SLOW, async ($, on) => {
+    const { seen } = await harness($, on)
+
+    expect(seen.ran).toEqual([])
+    expect(seen.spawned).toHaveLength(1)
+  })
+
+  test('with no Xcode tools the sensor stays off and says how to fix it', SLOW, async ($, on) => {
+    const stderr = 'xcrun: error: invalid active developer path (/Library/Developer/CommandLineTools), missing xcrun'
+    const { seen } = await harness($, on, {}, { hasBinary: false, swiftc: { exitCode: 1, stderr } })
+
+    expect(seen.statuses.at(-1)).toBe('spank: sensor off (needs Xcode command line tools: run xcode-select --install)')
+    expect(seen.spawned).toEqual([])
+  })
+
+  test('settings: sensitivity reaches slapd', { ...SLOW, options: { threshold: 0.12 } }, async ($, on) => {
+    const { seen } = await harness($, on)
+    expect(seen.spawned[0]?.slice(1)).toEqual(['--threshold', '0.12'])
+  })
+
+  test('settings: by default slapd gets the manifest default', SLOW, async ($, on) => {
+    const { seen } = await harness($, on)
+    expect(seen.spawned[0]?.slice(1)).toEqual(['--threshold', '0.05'])
+  })
+
+  test('settings: a higher stop level lets a level 4 slap through', { ...SLOW, options: { stop_level: 5 } }, async ($, on) => {
+    const { seen, feed, turnStart } = await harness($, on)
+
+    await turnStart('turn-1')
+    await feed(slapLine(4, 0.6))
+    expect(seen.aborted).toEqual([])
+    await feed(slapLine(5, 1.2))
+    expect(seen.aborted).toEqual(['turn-1'])
+  })
+
+  test('settings: volume scales the clip', { ...SLOW, options: { volume: 2.5 } }, async ($, on) => {
+    const { seen, feed } = await harness($, on)
+    await feed(slapLine(3, 0.3))
+    expect(seen.gains).toEqual([2.5])
+  })
+
+  test('settings: volume 0 plays nothing', { ...SLOW, options: { volume: 0 } }, async ($, on) => {
+    const { seen, feed } = await harness($, on)
+    await feed(slapLine(3, 0.3))
+    expect(seen.played).toEqual([])
+  })
+
+  test('settings: faces are large by default', SLOW, async ($, on) => {
+    const { feed } = await harness($, on)
+    const ui = await $.ui.mount(BAND)
+    await feed(slapLine(3, 0.3))
+    expect((await ui.find({ key: 'face' }))?.props.rows).toBe(16)
+    await ui.unmount()
+  })
+
+  for (const [size, rows] of [['small', 8], ['medium', 12], ['off', undefined]] as const) {
+    test(`settings: face size ${size}`, { ...SLOW, options: { face_size: size } }, async ($, on) => {
+      const { feed } = await harness($, on)
+      const ui = await $.ui.mount(BAND)
+      await feed(slapLine(3, 0.3))
+      expect((await ui.find({ key: 'face' }))?.props.rows).toBe(rows)
+      await ui.unmount()
+    })
+  }
 
   test('/slaps mute keeps the laptop quiet', SLOW, async ($, on) => {
     const { seen, feed, slaps } = await harness($, on)

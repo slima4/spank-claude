@@ -1,14 +1,14 @@
-MOD ?= plugin
+# The plugin builds slapd itself on first run; these are for development.
+SLAPD = plugin/bin/slapd
 
-slapd/slapd: slapd/main.swift
+$(SLAPD): plugin/slapd/main.swift
+	mkdir -p plugin/bin
 	swiftc -O -swift-version 5 -o $@ $<
 
-install: slapd/slapd
-	mkdir -p $(MOD)/bin
-	cp slapd/slapd $(MOD)/bin/slapd
+slapd: $(SLAPD)
 
-raw: slapd/slapd
-	./slapd/slapd --raw
+raw: $(SLAPD)
+	$(SLAPD) --raw
 
 # Terminal cells for the faces drawn above the prompt.
 faces: plugin/hooks/faces.ts
@@ -16,4 +16,4 @@ faces: plugin/hooks/faces.ts
 plugin/hooks/faces.ts: tools/faces.swift $(wildcard assets/faces/level_*.png)
 	swift tools/faces.swift
 
-.PHONY: install raw faces
+.PHONY: slapd raw faces
