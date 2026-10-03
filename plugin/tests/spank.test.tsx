@@ -10,8 +10,9 @@ function slapLine(level: number, peak: number) {
 // record of what the plugin showed, said, stopped and told Claude. The test
 // kit does not route a plugin's $.session.append to the test's hooks, so
 // each append fails here and the plugin's debug line for it carries the note.
-async function harness($: Engine, on: On) {
-  mock.store(on, { total: 41 })
+// `stored` is the plugin's store at the start; by default slaps reach Claude.
+async function harness($: Engine, on: On, stored: Record<string, unknown> = { claude: true }) {
+  mock.store(on, { total: 41, ...stored })
   const clock = mock.clock(on)
   const seen = {
     statuses: [] as (string | undefined)[],
@@ -46,6 +47,11 @@ async function harness($: Engine, on: On) {
   on('audio.speak', ($, e) => {
     seen.spoken.push(e.text)
     return { value: { via: 'system' as const } }
+  })
+  // The engine's own band: empty.
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
+    const { Box } = $.ui.resolve(e)
+    return <Box />
   })
   on('ui.log', ($, e) => {
     const note = /could not tell Claude "(.*)":/s.exec(e.text)?.[1]
@@ -178,6 +184,63 @@ describe('spank', () => {
     await turnStart('turn-2')
     expect(seen.notes).toHaveLength(1)
     expect(seen.notes[0]).toContain('Since your last reply the user physically slapped their laptop (')
+  })
+
+  test('by default slaps neither reach Claude nor stop its turn', SLOW, async ($, on) => {
+    const { seen, feed, turnStart } = await harness($, on, {})
+
+    await turnStart('turn-1')
+    await feed(slapLine(5, 1.7))
+    await turnStart('turn-2')
+
+    expect(seen.aborted).toEqual([])
+    expect(seen.notes).toEqual([])
+    expect(seen.toasts).toEqual(['Ouch! L5'])
+    expect(seen.spoken).toEqual(['stop hitting me!'])
+  })
+
+  test('/slaps claude on and off switch the Claude actions', SLOW, async ($, on) => {
+    const { seen, feed, turnStart, slaps } = await harness($, on, {})
+
+    expect((await slaps('claude on')).text).toBe('Slaps now reach Claude, and a hard one stops its turn.')
+    await turnStart('turn-1')
+    await feed(slapLine(5, 1.7))
+    expect(seen.aborted).toEqual(['turn-1'])
+
+    expect((await slaps('claude off')).text).toBe('Slaps no longer reach Claude or stop its turn.')
+    await turnStart('turn-2')
+    await feed(slapLine(5, 1.7))
+    expect(seen.aborted).toEqual(['turn-1'])
+    expect(seen.notes).toHaveLength(1)
+  })
+
+  test('a slap shows its level\'s face above the prompt for a moment', SLOW, async ($, on) => {
+    const { clock, feed } = await harness($, on)
+    const band = {
+      plugin: 'spank',
+      surface: 'terminal' as const,
+      component: 'AbovePrompt' as const,
+      props: { hasSurvey: false, isWorking: false, maxRows: 30, bodyColumns: 120, scroll: { offset: 0, bodyRows: 30 }, view: {} },
+    }
+
+    const ui = await $.ui.mount(band)
+    expect(await ui.find({ key: 'face' })).toBeUndefined()
+
+    await feed(slapLine(5, 1.63))
+    const drawn = await ui.find({ key: 'face' })
+    expect(drawn?.type).toBe('Raster')
+    expect(drawn?.props.rows).toBe(16)
+    expect(await ui.find({ text: 'stop hitting me!' })).toBeDefined()
+    expect(await ui.find({ text: /level 5 of 5, 1\.63g/ })).toBeDefined()
+
+    await clock.advance(3000)
+    expect(await ui.find({ key: 'face' })).toBeUndefined()
+    await ui.unmount()
+
+    const narrow = await $.ui.mount({ ...band, props: { ...band.props, maxRows: 9 } })
+    await feed(slapLine(2, 0.2))
+    expect((await narrow.find({ key: 'face' }))?.props.rows).toBe(8)
+    await narrow.unmount()
   })
 
   test('/slaps mute keeps the laptop quiet', SLOW, async ($, on) => {

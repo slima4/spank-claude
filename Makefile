@@ -10,4 +10,10 @@ install: slapd/slapd
 raw: slapd/slapd
 	./slapd/slapd --raw
 
-.PHONY: install raw
+# Terminal cells for the faces drawn above the prompt.
+faces: plugin/hooks/faces.ts
+
+plugin/hooks/faces.ts: tools/faces.swift $(wildcard assets/faces/level_*.png)
+	swift tools/faces.swift
+
+.PHONY: install raw faces
