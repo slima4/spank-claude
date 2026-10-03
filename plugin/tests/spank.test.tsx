@@ -13,6 +13,10 @@ const BAND = {
 const CLIP_2 = 'assets/voices/level_2.mp3'
 const CLIP_4 = 'assets/voices/level_4.mp3'
 
+function queue() {
+  return { lines: [] as string[], wake: () => {} }
+}
+
 function raw(peak: number) {
   return JSON.stringify({ type: 'raw', peak, noise: 0.001 })
 }
@@ -27,6 +31,7 @@ function slapLine(level: number, peak: number) {
 // each append fails here and the plugin's debug line for it carries the note.
 // `stored` is the plugin's store at the start; by default slaps reach Claude.
 // `world` is the disk: by default slapd is built and newer than its source.
+// This session is 'session-a'; the active-session file lives under TMPDIR.
 type World = { hasBinary?: boolean; swiftc?: { exitCode: number; stderr: string }; hasThresholdRow?: boolean }
 
 async function harness($: Engine, on: On, stored: Record<string, unknown> = { claude: true }, world: World = {}) {
@@ -42,7 +47,21 @@ async function harness($: Engine, on: On, stored: Record<string, unknown> = { cl
     spawned: [] as string[][],
     gains: [] as number[],
     configured: [] as { key: string; value: unknown }[],
+    readersClosed: 0,
   }
+
+  mock.env(on, { TMPDIR: '/tmp/test/' })
+  on('session.id', () => ({ value: 'session-a' }))
+  const files = new Map<string, string>()
+  on('fs.read', ($, e) => {
+    const text = files.get(e.path)
+    if (text === undefined) throw new Error(`ENOENT: ${e.path}`)
+    return { value: text }
+  })
+  on('fs.write', ($, e) => {
+    files.set(e.path, e.text)
+    return { value: undefined }
+  })
 
   let hasBinary = world.hasBinary ?? true
   on('fs.exists', ($, e) => ({ value: e.path.endsWith('/bin/slapd') ? hasBinary : true }))
@@ -61,14 +80,19 @@ async function harness($: Engine, on: On, stored: Record<string, unknown> = { cl
   let holdClips = false
   const held: (() => void)[] = []
 
-  const lines: string[] = []
-  let wake = () => {}
+  // Two slapd streams: the session's own, and /slaps calibrate's (--raw).
+  const streams = { main: queue(), raw: queue() }
   on('process.spawn', async function* ($, e) {
     seen.spawned.push([...e.argv])
-    for (;;) {
-      const line = lines.shift()
-      if (line !== undefined) yield { stream: 'stdout' as const, text: line + '\n' }
-      else await new Promise<void>(resolve => (wake = resolve))
+    const source = e.argv.includes('--raw') ? streams.raw : streams.main
+    try {
+      for (;;) {
+        const line = source.lines.shift()
+        if (line !== undefined) yield { stream: 'stdout' as const, text: line + '\n' }
+        else await new Promise<void>(resolve => (source.wake = resolve))
+      }
+    } finally {
+      if (source === streams.raw) seen.readersClosed += 1
     }
   })
 
@@ -124,10 +148,21 @@ async function harness($: Engine, on: On, stored: Record<string, unknown> = { cl
     clock,
     seen,
     async feed(...more: string[]) {
-      lines.push(...more)
-      wake()
+      streams.main.lines.push(...more)
+      streams.main.wake()
       await clock.settle()
     },
+    // What /slaps calibrate's own slapd reads.
+    async feedRaw(...peaks: number[]) {
+      streams.raw.lines.push(...peaks.map(raw))
+      streams.raw.wake()
+      await clock.settle()
+    },
+    // What the active-session file says, as another session would write it.
+    setActive(text: string) {
+      files.set('/tmp/test/spank-claude-active.json', text)
+    },
+    active: () => files.get('/tmp/test/spank-claude-active.json'),
     holdClips() {
       holdClips = true
     },
@@ -158,7 +193,7 @@ describe('spank', () => {
     await feed('not json')
     await feed(slapLine(3, 0.4231))
 
-    expect(seen.statuses).toContain('spank: armed')
+    expect(seen.statuses).toContain('spank: armed (0.05g)')
     expect(seen.statuses).toContain('spank: 1 this session, last L3 (0.42g)')
     expect(seen.toasts).toEqual(['いたっ！ L3'])
     expect((await slaps()).text).toBe('1 slaps this session, 42 all time; last one level 3, 0.42g.')
@@ -344,12 +379,12 @@ describe('spank', () => {
 
   test('settings: sensitivity reaches slapd', { ...SLOW, options: { threshold: 0.12 } }, async ($, on) => {
     const { seen } = await harness($, on)
-    expect(seen.spawned[0]?.slice(1)).toEqual(['--raw', '--threshold', '0.12'])
+    expect(seen.spawned[0]?.slice(1)).toEqual(['--threshold', '0.12'])
   })
 
   test('settings: by default slapd gets the manifest default', SLOW, async ($, on) => {
     const { seen } = await harness($, on)
-    expect(seen.spawned[0]?.slice(1)).toEqual(['--raw', '--threshold', '0.05'])
+    expect(seen.spawned[0]?.slice(1)).toEqual(['--threshold', '0.05'])
   })
 
   test('settings: a higher stop level lets a level 4 slap through', { ...SLOW, options: { stop_level: 5 } }, async ($, on) => {
@@ -392,57 +427,124 @@ describe('spank', () => {
     })
   }
 
-  test('behind another session\'s slapd, the status says standby until it takes over', SLOW, async ($, on) => {
-    const { seen, feed } = await harness($, on)
+  test('only the session used last reacts to a slap', SLOW, async ($, on) => {
+    const { seen, feed, slaps, setActive, active } = await harness($, on)
+    expect(JSON.parse(active() ?? '{}').session).toBe('session-a')
 
-    await feed('{"type":"standby","ts":1}')
-    expect(seen.statuses.at(-1)).toBe('spank: standby (another Claude session is reacting to slaps)')
-    await feed('{"type":"start","ts":2}')
-    expect(seen.statuses.at(-1)).toBe('spank: armed')
+    setActive(JSON.stringify({ session: 'session-b', at: 1 }))
+    await feed(slapLine(3, 0.3))
+    expect(seen.toasts).toEqual([])
+    expect(seen.played).toEqual([])
+
+    await slaps()
+    expect(JSON.parse(active() ?? '{}').session).toBe('session-a')
+    await feed(slapLine(3, 0.3))
+    expect(seen.toasts).toEqual(['いたっ！ L3'])
+  })
+
+  test('with the active-session file unreadable, every session reacts', SLOW, async ($, on) => {
+    const { seen, feed, setActive } = await harness($, on)
+
+    setActive('{"session": "sess')
+    await feed(slapLine(3, 0.3))
+    expect(seen.toasts).toEqual(['いたっ！ L3'])
   })
 
   test('/slaps calibrate sets the sensitivity between typing and knocks', SLOW, async ($, on) => {
-    const { clock, seen, feed, slaps } = await harness($, on)
+    const { clock, seen, feed, feedRaw, slaps } = await harness($, on)
+    await feed('{"type":"start","ts":1}')
 
-    expect((await slaps('calibrate')).text).toMatch(/^Calibrating\./)
-    await feed(raw(0.004), raw(0.02), raw(0.012), raw(0.016))
+    expect((await slaps('calibrate')).text).toMatch(/^Calibrating\. Type anything for 6 seconds without pressing Enter/)
+    await feedRaw(0.01, 0.03, 0.02, 0.025)
+    expect(seen.spawned.at(-1)?.slice(1)).toEqual(['--raw', '--threshold', '100'])
     await clock.advance(6000)
-    expect(seen.statuses.at(-1)).toBe('spank: calibrating 2/2: knock on the desk 3 times')
 
-    // Three knocks, the second split across two moments; a slap meanwhile is ignored.
-    await feed(raw(0.003), raw(0.3), raw(0.004), raw(0.12), raw(0.2), raw(0.003), slapLine(3, 0.3), raw(0.25), raw(0.002))
+    // Three knocks, the second split across two moments; a slap on the
+    // session's own stream meanwhile is ignored.
+    await feedRaw(0.003, 0.3, 0.004, 0.12, 0.2, 0.003)
+    expect(seen.statuses.at(-1)).toBe('spank: calibrating 2/2: knock on the desk 3 times (8s)')
+    await feed(slapLine(3, 0.3))
+    await feedRaw(0.25, 0.002)
     await clock.advance(8000)
+    await feedRaw(0.002) // the first reading after the end finishes it
 
-    // sqrt(0.02 * 0.2) = 0.063
-    expect(seen.configured).toEqual([{ key: 'spank.threshold', value: 0.063 }])
-    expect(seen.toasts.at(-1)).toMatch(/^Sensitivity set to 0\.063g/)
+    // sqrt(0.03 * 0.2) = 0.077
+    expect(seen.configured).toEqual([{ key: 'spank.threshold', value: 0.077 }])
+    expect(seen.toasts.at(-1)).toMatch(/^Sensitivity set to 0\.077g \(typing reached 0\.030g, your knocks 0\.200g\)/)
     expect(seen.played).toEqual([])
+    expect(seen.readersClosed).toBe(1)
+    expect(seen.statuses.at(-1)).toBe('spank: armed (0.05g)')
   })
 
   test('/slaps calibrate says so when it cannot save the sensitivity', SLOW, async ($, on) => {
-    const { clock, seen, feed, slaps } = await harness($, on, { claude: true }, { hasThresholdRow: false })
+    const { clock, seen, feedRaw, slaps } = await harness($, on, { claude: true }, { hasThresholdRow: false })
 
     await slaps('calibrate')
-    await feed(raw(0.02))
+    await feedRaw(0.03)
     await clock.advance(6000)
-    await feed(raw(0.3), raw(0.002), raw(0.2), raw(0.002), raw(0.25))
+    await feedRaw(0.3, 0.002, 0.2, 0.002, 0.25, 0.002)
     await clock.advance(8000)
+    await feedRaw(0.002)
 
     expect(seen.configured).toEqual([])
-    expect(seen.toasts.at(-1)).toMatch(/could not save it: no sensitivity row in \/config/)
+    expect(seen.toasts.at(-1)).toMatch(/^Could not save the sensitivity: no sensitivity row in \/config/)
   })
 
-  test('/slaps calibrate gives up when the knocks are no louder than typing', SLOW, async ($, on) => {
+  test('/slaps calibrate gives up on fewer than 3 clear knocks', SLOW, async ($, on) => {
+    const { clock, seen, feedRaw, slaps } = await harness($, on)
+
+    await slaps('calibrate')
+    await feedRaw(0.03)
+    await clock.advance(6000)
+    await feedRaw(0.3, 0.002, 0.2, 0.002)
+    await clock.advance(8000)
+    await feedRaw(0.002)
+
+    expect(seen.configured).toEqual([])
+    expect(seen.toasts.at(-1)).toBe(
+      'Calibration failed: heard 2 clear knocks, not 3; knock 3 separate times, about a second apart.',
+    )
+  })
+
+  test('/slaps calibrate gives up when the knocks are barely louder than typing', SLOW, async ($, on) => {
+    const { clock, seen, feedRaw, slaps } = await harness($, on)
+
+    await slaps('calibrate')
+    await feedRaw(0.03, 0.04)
+    await clock.advance(6000)
+    await feedRaw(0.05, 0.002, 0.045, 0.002, 0.048)
+    await clock.advance(8000)
+    await feedRaw(0.002)
+
+    expect(seen.configured).toEqual([])
+    expect(seen.toasts.at(-1)).toBe('Calibration failed: the knocks were barely louder than your typing; knock harder.')
+  })
+
+  test('/slaps calibrate with no typing cannot set a sensitivity near the sensor\'s rest', SLOW, async ($, on) => {
+    const { clock, seen, feedRaw, slaps } = await harness($, on)
+
+    await slaps('calibrate')
+    await feedRaw(0.01, 0.012)
+    await clock.advance(6000)
+    // Soft taps around 0.02g: louder than the rest, but under the typing floor.
+    await feedRaw(0.02, 0.003, 0.021, 0.003, 0.02, 0.003)
+    await clock.advance(8000)
+    await feedRaw(0.002)
+
+    expect(seen.configured).toEqual([])
+    expect(seen.toasts.at(-1)).toMatch(/^Calibration failed: heard 0 clear knocks/)
+  })
+
+  test('a calibration that hears nothing stops swallowing slaps', SLOW, async ($, on) => {
     const { clock, seen, feed, slaps } = await harness($, on)
 
     await slaps('calibrate')
-    await feed(raw(0.03), raw(0.04))
-    await clock.advance(6000)
-    await feed(raw(0.05), raw(0.002), raw(0.045))
-    await clock.advance(8000)
+    await feed(slapLine(3, 0.3))
+    expect(seen.toasts.filter(t => t.endsWith('L3'))).toEqual([])
 
-    expect(seen.configured).toEqual([])
-    expect(seen.toasts.at(-1)).toMatch(/^Calibration failed: the knocks were not much louder than typing/)
+    await clock.advance(19000)
+    await feed(slapLine(3, 0.3))
+    expect(seen.toasts.filter(t => t.endsWith('L3'))).toEqual(['いたっ！ L3'])
   })
 
   test('/slaps mute keeps the laptop quiet', SLOW, async ($, on) => {

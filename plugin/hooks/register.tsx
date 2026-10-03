@@ -21,10 +21,14 @@ const FACE_ROWS: Record<string, number> = { large: 16, medium: 12, small: 8, off
 // Room the face leaves beside it for its line.
 const FACE_TEXT_COLUMNS = 24
 // /slaps calibrate: how long each step listens, and the least typing it
-// assumes (so sitting still does not make every keystroke a slap).
+// assumes. The sensor rests around 0.01g, so a calibration with no typing
+// still lands well above that.
 const CALIBRATE_TYPING_MS = 6000
 const CALIBRATE_KNOCKING_MS = 8000
-const CALIBRATE_FLOOR = 0.01
+const CALIBRATE_FLOOR = 0.025
+// A calibration older than this is over, whatever its reader is doing, so a
+// stalled one cannot keep swallowing slaps.
+const CALIBRATE_STALE_MS = CALIBRATE_TYPING_MS + CALIBRATE_KNOCKING_MS + 5000
 // How long /slaps image shows its test picture.
 const PROBE_MS = 10000
 
@@ -32,21 +36,32 @@ const PROBE_MS = 10000
 // her face and in the toast.
 const CAPTIONS = ['んっ！', 'あっ！', 'いたっ！', 'きゃっ！', 'あぁっ…！'] as const
 
-// slapd's lines: it holds the sensor, waits behind another session's slapd,
-// heard a slap, or (every 0.1s) the loudest shake of that moment.
-type Line = { type: 'start' } | { type: 'standby' } | ({ type: 'slap' } & Slap) | { type: 'raw'; peak: number }
+// slapd's lines: it opened the sensor, heard a slap, or (with --raw, every
+// 0.1s) the loudest shake of that moment.
+type Line = { type: 'start' } | ({ type: 'slap' } & Slap) | { type: 'raw'; peak: number }
 
 function parseLine(line: string): Line | undefined {
   try {
     const v = JSON.parse(line) as Record<string, unknown>
     if (v.type === 'start') return { type: 'start' }
-    if (v.type === 'standby') return { type: 'standby' }
     if (v.type === 'raw' && typeof v.peak === 'number') return { type: 'raw', peak: v.peak }
     if (v.type === 'slap' && typeof v.ts === 'number' && typeof v.peak === 'number' && typeof v.level === 'number') {
       return { type: 'slap', ts: v.ts, peak: v.peak, level: v.level }
     }
   } catch {}
   return undefined
+}
+
+// Splits a stream's text into whole lines, keeping a partial last line for the
+// next piece.
+function lineSplitter() {
+  let pending = ''
+  return (text: string) => {
+    pending += text
+    const lines = pending.split('\n')
+    pending = lines.pop() ?? ''
+    return lines
+  }
 }
 
 // When the slaps happened: during a turn, during a turn they stopped, or
@@ -67,15 +82,15 @@ function note(slaps: readonly Slap[], moment: Moment) {
 }
 
 // Slaps not yet told to Claude, the timer that tells it, the voice clip
-// playing (its level, and how to stop it), and the timer that hides the face.
-// Reset by register, so each load starts clean.
+// playing (its level, and how to stop it), the timer that hides the face, a
+// calibration under way, and the status line the sensor last set (which a
+// calibration puts back). Reset by register, so each load starts clean.
 let burst: Slap[] = []
 let burstTimer: Timer | undefined
 let playing: { level: number; stop: AbortController } | undefined
 let faceTimer: Timer | undefined
-// /slaps calibrate's progress: its step and what each step heard.
-let calibration: { step: 'typing' | 'knocking'; typing: number[]; knocking: number[] } | undefined
-let calibrationTimer: Timer | undefined
+let calibration: { step: 'typing' | 'knocking'; startedAt: number } | undefined
+let sensorStatus: string | undefined
 // /slaps image's picture (PNG, base64), and the band's id for blitting it.
 let probePng: string | undefined
 let bandRequestId: string | undefined
@@ -96,6 +111,34 @@ function readSettings(options: PluginOptions): Settings {
     stopLevel: number('stop_level', 4),
     faceRows: typeof faceSize === 'string' ? (FACE_ROWS[faceSize] ?? 16) : 16,
     volume: number('volume', 1),
+  }
+}
+
+function setSensorStatus($: EngineInterface, text: string) {
+  sensorStatus = text
+  $.ui.status(text)
+}
+
+// Which session reacts when several are open: the one used last. Each session
+// writes itself into this file (in the per-user temp folder) when it starts,
+// on every prompt and on /slaps; a slap belongs to the session it names.
+async function activePath($: EngineInterface) {
+  const temp = (await $.env.get('TMPDIR')) ?? `${$.plugin.root}/`
+  return `${temp.endsWith('/') ? temp : `${temp}/`}spank-claude-active.json`
+}
+
+async function markActive($: EngineInterface) {
+  const session = await $.session.id()
+  await $.fs.write(await activePath($), JSON.stringify({ session, at: await $.clock.now() }))
+}
+
+// Unreadable or torn, the file names nobody, and every session reacts.
+async function isActive($: EngineInterface) {
+  try {
+    const { session } = JSON.parse(await $.fs.read(await activePath($))) as { session?: unknown }
+    return typeof session !== 'string' || session === (await $.session.id())
+  } catch {
+    return true
   }
 }
 
@@ -153,72 +196,100 @@ async function tellClaude($: EngineInterface, moment: Moment) {
 // counts once.
 function pickThreshold(typing: readonly number[], knocking: readonly number[]) {
   const typingMax = Math.max(CALIBRATE_FLOOR, ...typing)
-  const knocks = knocking
+  const peaks = knocking
     .filter((peak, i) => peak > (knocking[i - 1] ?? 0) && peak >= (knocking[i + 1] ?? 0))
     .sort((a, b) => b - a)
-  const softest = knocks[2]
-  if (softest === undefined || softest < typingMax * 1.5) {
-    return { reason: 'the knocks were not much louder than typing; knock harder and try again' } as const
+  const clear = peaks.filter(peak => peak >= typingMax * 1.5)
+  const softest = clear[2]
+  if (softest === undefined) {
+    const louder = peaks.filter(peak => peak > typingMax).length
+    return {
+      reason:
+        louder >= 3
+          ? 'the knocks were barely louder than your typing; knock harder'
+          : `heard ${clear.length} clear knock${clear.length === 1 ? '' : 's'}, not 3; knock 3 separate times, about a second apart`,
+    } as const
   }
-  const threshold = Math.round(Math.min(1, Math.max(0.01, Math.sqrt(typingMax * softest))) * 1000) / 1000
+  const threshold = Math.round(Math.min(1, Math.sqrt(typingMax * softest)) * 1000) / 1000
   return { threshold, typingMax, softest }
 }
 
-// /slaps calibrate: listens to typing, then to knocks, then sets the
-// sensitivity setting between them. Slaps are ignored meanwhile.
-function startCalibration($: EngineInterface) {
-  calibrationTimer?.cancel()
-  calibration = { step: 'typing', typing: [], knocking: [] }
-  $.ui.status('spank: calibrating 1/2: type normally')
-  calibrationTimer = $.clock.after(CALIBRATE_TYPING_MS, () => {
-    if (calibration === undefined) return
-    calibration.step = 'knocking'
-    $.ui.status('spank: calibrating 2/2: knock on the desk 3 times')
-    $.ui.toast('Now knock on the desk 3 times', { timeoutMs: CALIBRATE_KNOCKING_MS })
-    calibrationTimer = $.clock.after(CALIBRATE_KNOCKING_MS, () => {
-      finishCalibration($).catch(error => $.ui.toast(`Calibration failed: ${String(error)}`, { timeoutMs: 10000 }))
-    })
-  })
-}
+// /slaps calibrate: a slapd of its own (--raw: the loudest shake every 0.1s)
+// listens to typing, then to knocks, and the sensitivity setting goes between
+// them. Slaps are ignored meanwhile. Steps follow the clock as readings
+// arrive, and leaving the loop stops that slapd.
+async function calibrate($: EngineInterface) {
+  const startedAt = await $.clock.now()
+  const run = { step: 'typing' as 'typing' | 'knocking', startedAt }
+  calibration = run
+  const heard = { typing: [] as number[], knocking: [] as number[] }
+  $.ui.status(`spank: calibrating 1/2: type anything for ${CALIBRATE_TYPING_MS / 1000}s, without pressing Enter`)
 
-async function finishCalibration($: EngineInterface) {
-  const heard = calibration
-  calibration = undefined
-  calibrationTimer = undefined
-  if (heard === undefined) return
+  const reader = $.process.spawn({ argv: [`${$.plugin.root}/bin/slapd`, '--raw', '--threshold', '100'] })
+  const backstop = $.clock.after(CALIBRATE_STALE_MS, () => void reader.return({ code: null, signal: null }))
+  const lines = lineSplitter()
+  let failure: string | undefined
+  try {
+    reading: for await (const { stream, text } of reader) {
+      if (stream !== 'stdout') continue
+      for (const line of lines(text)) {
+        const parsed = parseLine(line)
+        if (parsed?.type !== 'raw') continue
+        const elapsed = (await $.clock.now()) - startedAt
+        if (elapsed >= CALIBRATE_TYPING_MS + CALIBRATE_KNOCKING_MS) break reading
+        if (elapsed >= CALIBRATE_TYPING_MS && run.step === 'typing') {
+          run.step = 'knocking'
+          $.ui.status(`spank: calibrating 2/2: knock on the desk 3 times (${CALIBRATE_KNOCKING_MS / 1000}s)`)
+          $.ui.toast('Now knock on the desk 3 times', { timeoutMs: CALIBRATE_KNOCKING_MS })
+        }
+        heard[run.step].push(parsed.peak)
+      }
+    }
+  } catch (error) {
+    failure = `the sensor could not be read (${String(error)})`
+  } finally {
+    backstop.cancel()
+    if (calibration === run) calibration = undefined
+  }
 
-  const picked = pickThreshold(heard.typing, heard.knocking)
+  $.ui.status(sensorStatus)
+  const picked = failure === undefined ? pickThreshold(heard.typing, heard.knocking) : ({ reason: failure } as const)
   if (picked.threshold === undefined) {
-    $.ui.status('spank: armed')
-    $.ui.toast(`Calibration failed: ${picked.reason}.`, { timeoutMs: 8000 })
+    $.ui.toast(`Calibration failed: ${picked.reason}.`, { timeoutMs: 10000 })
     return
   }
-  // Written as the person would in /config; the module then reloads with it.
-  // The row is looked up, not spelled, since its key depends on how the
-  // plugin was loaded.
-  const saved = await saveThreshold($, picked.threshold).catch(error => String(error))
-  $.ui.status('spank: armed')
+  // Told before saving: saving reloads the plugin, which may drop anything
+  // this module says afterwards.
   $.ui.toast(
-    saved === undefined
-      ? `Sensitivity set to ${picked.threshold}g (typing reached ${picked.typingMax.toFixed(3)}g, your knocks ${picked.softest.toFixed(3)}g).`
-      : `Calibration found ${picked.threshold}g but could not save it: ${saved}. Set "Slap sensitivity" in /config.`,
+    `Sensitivity set to ${picked.threshold}g (typing reached ${picked.typingMax.toFixed(3)}g, your knocks ${picked.softest.toFixed(3)}g).`,
     { timeoutMs: 10000 },
   )
+  const unsaved = await saveThreshold($, picked.threshold).catch(error => String(error))
+  if (unsaved !== undefined) {
+    $.ui.toast(`Could not save the sensitivity: ${unsaved}. Set "Slap sensitivity" in /config.`, { timeoutMs: 10000 })
+  }
 }
 
-// Resolves undefined once saved, or why not.
+// Writes the sensitivity as the person would in /config; the module then
+// reloads with it. The row is looked up, not spelled, since its key depends
+// on how the plugin was loaded. Resolves undefined once saved, or why not.
 async function saveThreshold($: EngineInterface, threshold: number): Promise<string | undefined> {
   const rows = await $.config.list()
-  const row =
-    rows.find(r => r.provider.plugin === $.plugin.name && r.key.endsWith('.threshold')) ??
-    rows.find(r => r.key === `${$.plugin.name}.threshold`)
+  const row = rows.find(
+    r => r.key === `${$.plugin.name}.threshold` || (r.provider.plugin === $.plugin.name && r.key.endsWith('.threshold')),
+  )
   if (row === undefined) return 'no sensitivity row in /config'
   const set = await $.config.set({ key: row.key, value: threshold })
   return set.deny
 }
 
 async function onSlap($: EngineInterface, slap: Slap) {
-  if (calibration !== undefined) return
+  if (calibration !== undefined) {
+    if ((await $.clock.now()) - calibration.startedAt < CALIBRATE_STALE_MS) return
+    calibration = undefined
+  }
+  if (!(await isActive($))) return
+
   const n = await update($, count, c => c + 1)
   await update($, last, () => slap)
   await $.store.set('total', Number((await $.store.get('total')) ?? 0) + 1)
@@ -228,7 +299,7 @@ async function onSlap($: EngineInterface, slap: Slap) {
   const turnId = await read($, turn)
   const isStopping = isClaudeOn && turnId !== null && slap.level >= settings.stopLevel
 
-  $.ui.status(`spank: ${n} this session, last L${slap.level} (${slap.peak.toFixed(2)}g)`)
+  setSensorStatus($, `spank: ${n} this session, last L${slap.level} (${slap.peak.toFixed(2)}g)`)
 
   const level = Math.min(Math.max(slap.level, 1), 5)
   const line = CAPTIONS[level - 1] ?? CAPTIONS[0]
@@ -249,8 +320,6 @@ async function onSlap($: EngineInterface, slap: Slap) {
   burstTimer = $.clock.after(BURST_MS, () => void tellClaude($, 'turn'))
 }
 
-// Runs slapd for the module's life: it prints one JSON line per hit, and
-// leaving this loop (a reload, the session ending) kills it.
 // slapd ships as Swift source and is built on first run (and again when its
 // source is newer than the build), so installing needs only Xcode's command
 // line tools. Builds to a temporary name and renames, so two sessions starting
@@ -262,7 +331,7 @@ async function buildSlapd($: EngineInterface): Promise<string | undefined> {
     return undefined
   }
 
-  $.ui.status('spank: building the sensor reader (first run, about 20s)')
+  setSensorStatus($, 'spank: building the sensor reader (first run, about 20s)')
   const temporary = `${binary}.${await $.clock.now()}.tmp`
   await $.process.run(['/bin/mkdir', '-p', `${$.plugin.root}/bin`])
   const built = await $.process.run(['/usr/bin/swiftc', '-O', '-swift-version', '5', '-o', temporary, source], {
@@ -278,18 +347,17 @@ async function buildSlapd($: EngineInterface): Promise<string | undefined> {
   return moved.exitCode === 0 ? undefined : `build failed: ${moved.stderr.trim()}`
 }
 
+// Runs slapd for the module's life: it prints one JSON line per hit, and
+// leaving this loop (a reload, the session ending) kills it.
 async function listen($: EngineInterface) {
   const buildError = await buildSlapd($).catch(error => `build failed: ${String(error)}`)
   if (buildError !== undefined) {
-    $.ui.status(`spank: sensor off (${buildError})`)
+    setSensorStatus($, `spank: sensor off (${buildError})`)
     return
   }
 
-  // --raw adds the loudest shake every 0.1s, which /slaps calibrate listens to.
-  const slapd = $.process.spawn({
-    argv: [`${$.plugin.root}/bin/slapd`, '--raw', '--threshold', String(settings.threshold)],
-  })
-  let pending = ''
+  const slapd = $.process.spawn({ argv: [`${$.plugin.root}/bin/slapd`, '--threshold', String(settings.threshold)] })
+  const lines = lineSplitter()
   let lastError = ''
 
   try {
@@ -298,14 +366,9 @@ async function listen($: EngineInterface) {
         lastError = text.trim().split('\n').pop() ?? lastError
         continue
       }
-      pending += text
-      const lines = pending.split('\n')
-      pending = lines.pop() ?? ''
-      for (const line of lines) {
+      for (const line of lines(text)) {
         const parsed = parseLine(line)
-        if (parsed?.type === 'raw') calibration?.[calibration.step].push(parsed.peak)
-        if (parsed?.type === 'start') $.ui.status('spank: armed')
-        if (parsed?.type === 'standby') $.ui.status('spank: standby (another Claude session is reacting to slaps)')
+        if (parsed?.type === 'start') setSensorStatus($, `spank: armed (${settings.threshold}g)`)
         if (parsed?.type === 'slap') await onSlap($, parsed)
       }
     }
@@ -313,7 +376,7 @@ async function listen($: EngineInterface) {
     lastError = String(error)
   }
 
-  $.ui.status(`spank: sensor off (${lastError || 'slapd exited'})`)
+  setSensorStatus($, `spank: sensor off (${lastError || 'slapd exited'})`)
 }
 
 export const register: Register = (on, options) => {
@@ -324,9 +387,8 @@ export const register: Register = (on, options) => {
   playing = undefined
   faceTimer?.cancel()
   faceTimer = undefined
-  calibrationTimer?.cancel()
-  calibrationTimer = undefined
   calibration = undefined
+  sensorStatus = undefined
   probePng = undefined
   bandRequestId = undefined
 
@@ -335,14 +397,20 @@ export const register: Register = (on, options) => {
     // A reload drops the timers that would hide a face or picture left showing.
     await update($, face, () => null)
     await update($, probe, () => false)
+    await markActive($).catch(() => {})
     await $.command.register({
       name: 'slaps',
-      description: 'How many times you hit the laptop; mute its voice; let slaps reach Claude',
+      description: 'How many times you hit the laptop; calibrate, mute, or let slaps reach Claude',
       argumentHint: '[calibrate|mute|unmute|claude on|claude off|image]',
       immediate: true,
     })
     void listen($)
     return started
+  })
+
+  on('prompt.submit', async ($, e, next) => {
+    await markActive($).catch(() => {})
+    return next(e)
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
@@ -392,15 +460,18 @@ export const register: Register = (on, options) => {
   })
 
   on('command.run', { command: 'slaps' }, async ($, e) => {
+    await markActive($).catch(() => {})
     const arg = e.args.trim()
     if (arg === 'mute' || arg === 'unmute') {
       await $.store.set('muted', arg === 'mute')
       return { text: arg === 'mute' ? 'Laptop voice off.' : 'Laptop voice on.' }
     }
     if (arg === 'calibrate') {
-      startCalibration($)
+      void calibrate($)
       return {
-        text: 'Calibrating. Type normally for 6 seconds; when the toast says so, knock on the desk 3 times (8 seconds).',
+        text:
+          `Calibrating. Type anything for ${CALIBRATE_TYPING_MS / 1000} seconds without pressing Enter; ` +
+          `when the toast says so, knock on the desk 3 times (${CALIBRATE_KNOCKING_MS / 1000} seconds).`,
       }
     }
     if (arg === 'image') {
