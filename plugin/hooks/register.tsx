@@ -191,27 +191,39 @@ async function tellClaude($: EngineInterface, moment: Moment) {
 }
 
 // The sensitivity between typing and knocking: the geometric mean of the
-// loudest typing and the softest of the three strongest knocks. A knock is a
-// moment louder than the ones beside it, so a knock split across two moments
-// counts once.
+// loudest typing (at least CALIBRATE_FLOOR) and the softest of the three
+// strongest knocks, each of which must reach the bar, half again that typing.
+// A knock is a moment louder than the ones beside it, so a knock split across
+// two moments counts once. Also returns what it decided on, to log.
 function pickThreshold(typing: readonly number[], knocking: readonly number[]) {
-  const typingMax = Math.max(CALIBRATE_FLOOR, ...typing)
+  const typingMax = Math.max(0, ...typing)
+  const floored = Math.max(CALIBRATE_FLOOR, typingMax)
+  const bar = floored * 1.5
   const peaks = knocking
     .filter((peak, i) => peak > (knocking[i - 1] ?? 0) && peak >= (knocking[i + 1] ?? 0))
     .sort((a, b) => b - a)
-  const clear = peaks.filter(peak => peak >= typingMax * 1.5)
+  const clear = peaks.filter(peak => peak >= bar)
   const softest = clear[2]
   if (softest === undefined) {
-    const louder = peaks.filter(peak => peak > typingMax).length
-    return {
-      reason:
-        louder >= 3
-          ? 'the knocks were barely louder than your typing; knock harder'
-          : `heard ${clear.length} clear knock${clear.length === 1 ? '' : 's'}, not 3; knock 3 separate times, about a second apart`,
-    } as const
+    // A knock louder than typing but short of the bar, or none reaching it,
+    // was too soft; otherwise the missing ones ran together or never came.
+    const isSoft = clear.length === 0 || peaks.some(peak => peak > floored && peak < bar)
+    const advice = isSoft ? 'knock harder' : 'knock 3 separate times, a second apart'
+    return { reason: `heard ${clear.length} of 3 knocks reaching ${inG(bar)}; ${advice}`, typingMax, bar, peaks } as const
   }
-  const threshold = Math.round(Math.min(1, Math.sqrt(typingMax * softest)) * 1000) / 1000
-  return { threshold, typingMax, softest }
+  const threshold = Math.round(Math.min(1, Math.sqrt(floored * softest)) * 1000) / 1000
+  return { threshold, typingMax, softest, bar, peaks }
+}
+
+function inG(value: number) {
+  return `${value.toFixed(3)}g`
+}
+
+// A calibration's outcome: a toast, and a line in the transcript, which keeps
+// the whole text when the toast gets only one line.
+function report($: EngineInterface, text: string) {
+  $.ui.toast(text, { timeoutMs: 10000 })
+  $.ui.log(`spank: ${text}`)
 }
 
 // /slaps calibrate: a slapd of its own (--raw: the loudest shake every 0.1s)
@@ -253,20 +265,25 @@ async function calibrate($: EngineInterface) {
   }
 
   $.ui.status(sensorStatus)
-  const picked = failure === undefined ? pickThreshold(heard.typing, heard.knocking) : ({ reason: failure } as const)
+  if (failure !== undefined) {
+    report($, `Calibration failed: ${failure}.`)
+    return
+  }
+  const picked = pickThreshold(heard.typing, heard.knocking)
+  const peaks = picked.peaks.slice(0, 5).map(inG).join(', ')
+  $.ui.log(`spank: calibration: typing ${inG(picked.typingMax)}, bar ${inG(picked.bar)}, knock peaks [${peaks}]`, {
+    to: 'debug',
+  })
   if (picked.threshold === undefined) {
-    $.ui.toast(`Calibration failed: ${picked.reason}.`, { timeoutMs: 10000 })
+    report($, `Calibration failed: ${picked.reason}.`)
     return
   }
   // Told before saving: saving reloads the plugin, which may drop anything
   // this module says afterwards.
-  $.ui.toast(
-    `Sensitivity set to ${picked.threshold}g (typing reached ${picked.typingMax.toFixed(3)}g, your knocks ${picked.softest.toFixed(3)}g).`,
-    { timeoutMs: 10000 },
-  )
+  report($, `Sensitivity set to ${picked.threshold}g (typing ${inG(picked.typingMax)}, knocks ${inG(picked.softest)}).`)
   const unsaved = await saveThreshold($, picked.threshold).catch(error => String(error))
   if (unsaved !== undefined) {
-    $.ui.toast(`Could not save the sensitivity: ${unsaved}. Set "Slap sensitivity" in /config.`, { timeoutMs: 10000 })
+    report($, `Could not save the sensitivity: ${unsaved}. Set "Slap sensitivity" in /config.`)
   }
 }
 

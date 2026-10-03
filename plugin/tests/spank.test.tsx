@@ -47,6 +47,7 @@ async function harness($: Engine, on: On, stored: Record<string, unknown> = { cl
     spawned: [] as string[][],
     gains: [] as number[],
     configured: [] as { key: string; value: unknown }[],
+    logs: [] as string[],
     readersClosed: 0,
   }
 
@@ -120,6 +121,7 @@ async function harness($: Engine, on: On, stored: Record<string, unknown> = { cl
     return <Box />
   })
   on('ui.log', ($, e) => {
+    seen.logs.push(e.to === 'debug' ? `debug: ${e.text}` : e.text)
     const note = /could not tell Claude "(.*)":/s.exec(e.text)?.[1]
     if (note !== undefined) seen.notes.push(note)
     return { value: undefined }
@@ -470,7 +472,7 @@ describe('spank', () => {
 
     // sqrt(0.03 * 0.2) = 0.077
     expect(seen.configured).toEqual([{ key: 'spank.threshold', value: 0.077 }])
-    expect(seen.toasts.at(-1)).toMatch(/^Sensitivity set to 0\.077g \(typing reached 0\.030g, your knocks 0\.200g\)/)
+    expect(seen.toasts.at(-1)).toMatch(/^Sensitivity set to 0\.077g \(typing 0\.030g, knocks 0\.200g\)/)
     expect(seen.played).toEqual([])
     expect(seen.readersClosed).toBe(1)
     expect(seen.statuses.at(-1)).toBe('spank: armed (0.05g)')
@@ -502,7 +504,7 @@ describe('spank', () => {
 
     expect(seen.configured).toEqual([])
     expect(seen.toasts.at(-1)).toBe(
-      'Calibration failed: heard 2 clear knocks, not 3; knock 3 separate times, about a second apart.',
+      'Calibration failed: heard 2 of 3 knocks reaching 0.045g; knock 3 separate times, a second apart.',
     )
   })
 
@@ -517,7 +519,25 @@ describe('spank', () => {
     await feedRaw(0.002)
 
     expect(seen.configured).toEqual([])
-    expect(seen.toasts.at(-1)).toBe('Calibration failed: the knocks were barely louder than your typing; knock harder.')
+    expect(seen.toasts.at(-1)).toBe('Calibration failed: heard 0 of 3 knocks reaching 0.060g; knock harder.')
+  })
+
+  test('/slaps calibrate with two clear knocks and a soft one says to knock harder', SLOW, async ($, on) => {
+    const { clock, seen, feedRaw, slaps } = await harness($, on)
+
+    await slaps('calibrate')
+    await feedRaw(0.03, 0.04)
+    await clock.advance(6000)
+    await feedRaw(0.3, 0.002, 0.2, 0.002, 0.045, 0.002)
+    await clock.advance(8000)
+    await feedRaw(0.002)
+
+    const failed = 'Calibration failed: heard 2 of 3 knocks reaching 0.060g; knock harder.'
+    expect(seen.configured).toEqual([])
+    expect(seen.toasts.at(-1)).toBe(failed)
+    // The whole text in the transcript, and what it decided on in the debug log.
+    expect(seen.logs).toContain(`spank: ${failed}`)
+    expect(seen.logs).toContain('debug: spank: calibration: typing 0.040g, bar 0.060g, knock peaks [0.300g, 0.200g, 0.045g]')
   })
 
   test('/slaps calibrate with no typing cannot set a sensitivity near the sensor\'s rest', SLOW, async ($, on) => {
@@ -532,7 +552,7 @@ describe('spank', () => {
     await feedRaw(0.002)
 
     expect(seen.configured).toEqual([])
-    expect(seen.toasts.at(-1)).toMatch(/^Calibration failed: heard 0 clear knocks/)
+    expect(seen.toasts.at(-1)).toMatch(/^Calibration failed: heard 0 of 3 knocks/)
   })
 
   test('a calibration that hears nothing stops swallowing slaps', SLOW, async ($, on) => {
