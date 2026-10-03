@@ -1,0 +1,4 @@
+slapd/slapd
+plugin/bin/
+plugin/.claude-plugin/types/
+.DS_Store
