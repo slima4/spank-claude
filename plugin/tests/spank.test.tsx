@@ -1,4 +1,4 @@
-import type { On } from 'claude-code'
+import type { On, PromptEditInput } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
@@ -151,6 +151,10 @@ async function harness($: Engine, on: On, stored: Record<string, unknown> = { cl
     seen.aborted.push(e.turnId)
     return { value: undefined }
   })
+  on('prompt.edit', ($, e) => ({
+    text: e.text.slice(0, e.start) + e.inputText + e.text.slice(e.end),
+    cursor: e.start + e.inputText.length,
+  }))
 
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   // Let the start-up work (build check, slapd) run.
@@ -181,6 +185,17 @@ async function harness($: Engine, on: On, stored: Record<string, unknown> = { cl
     releaseClips() {
       for (const release of held.splice(0)) release()
     },
+    // A key typed in the prompt box. The kit raises prompt.edit, though its
+    // typings leave it off the engine's $.
+    typeKey: () =>
+      ($.prompt as unknown as { edit: (e: PromptEditInput) => Promise<unknown> }).edit({
+        origin: { kind: 'composer' },
+        text: '',
+        cursor: 0,
+        start: 0,
+        end: 0,
+        inputText: 'a',
+      }),
     turnStart: (turnId: string) => $.turn.start({ text: 'refactor everything', turnId }),
     turnComplete: (turnId: string) =>
       $.turn.complete({ turnId, answer: 'done', durationMs: 1000, isAborted: false, reason: 'answer' }),
@@ -463,10 +478,13 @@ describe('spank', () => {
   })
 
   test('/slaps calibrate sets the sensitivity between typing and knocks', SLOW, async ($, on) => {
-    const { clock, seen, feed, feedRaw, slaps } = await harness($, on)
+    const { clock, seen, feed, feedRaw, slaps, typeKey } = await harness($, on)
     await feed('{"type":"start","ts":1}')
 
-    expect((await slaps('calibrate')).text).toMatch(/^Calibrating\. Type anything for 6 seconds without pressing Enter/)
+    expect((await slaps('calibrate')).text).toMatch(
+      /^Calibrating\. Start typing in the prompt box, without pressing Enter: 6 seconds from your first key\./,
+    )
+    await typeKey()
     await feedRaw(0.01, 0.03, 0.02, 0.025)
     expect(seen.spawned.at(-1)?.slice(1)).toEqual(['--raw', '--threshold', '100'])
     await clock.advance(6000)
@@ -474,7 +492,8 @@ describe('spank', () => {
     // Three knocks, the second split across two moments; a slap on the
     // session's own stream meanwhile is ignored.
     await feedRaw(0.003, 0.3, 0.004, 0.12, 0.2, 0.003)
-    expect(seen.statuses.at(-1)).toBe('spank: calibrating 2/2: knock on the desk 3 times (8s)')
+    expect(seen.statuses).toContain('spank: calibrating 2/2: knock on the desk 3 times (8s from the first knock)')
+    expect(seen.statuses.at(-1)).toBe('spank: calibrating 2/2: keep knocking (8s)')
     await feed(slapLine(3, 0.3))
     await feedRaw(0.25, 0.002)
     await clock.advance(8000)
@@ -489,9 +508,10 @@ describe('spank', () => {
   })
 
   test('/slaps calibrate says so when it cannot save the sensitivity', SLOW, async ($, on) => {
-    const { clock, seen, feedRaw, slaps } = await harness($, on, { claude: true }, { hasThresholdRow: false })
+    const { clock, seen, feedRaw, slaps, typeKey } = await harness($, on, { claude: true }, { hasThresholdRow: false })
 
     await slaps('calibrate')
+    await typeKey()
     await feedRaw(0.03)
     await clock.advance(6000)
     await feedRaw(0.3, 0.002, 0.2, 0.002, 0.25, 0.002)
@@ -503,9 +523,10 @@ describe('spank', () => {
   })
 
   test('/slaps calibrate gives up on fewer than 3 clear knocks', SLOW, async ($, on) => {
-    const { clock, seen, feedRaw, slaps } = await harness($, on)
+    const { clock, seen, feedRaw, slaps, typeKey } = await harness($, on)
 
     await slaps('calibrate')
+    await typeKey()
     await feedRaw(0.03)
     await clock.advance(6000)
     await feedRaw(0.3, 0.002, 0.2, 0.002)
@@ -518,24 +539,29 @@ describe('spank', () => {
     )
   })
 
-  test('/slaps calibrate gives up when the knocks are barely louder than typing', SLOW, async ($, on) => {
-    const { clock, seen, feedRaw, slaps } = await harness($, on)
+  test('/slaps calibrate gives up when no knock is louder than typing by half', SLOW, async ($, on) => {
+    const { clock, seen, feedRaw, slaps, typeKey } = await harness($, on)
 
     await slaps('calibrate')
+    await typeKey()
     await feedRaw(0.03, 0.04)
     await clock.advance(6000)
     await feedRaw(0.05, 0.002, 0.045, 0.002, 0.048)
-    await clock.advance(8000)
+    await clock.advance(29000)
     await feedRaw(0.002)
+    expect(seen.toasts.at(-1)).toBe('Now knock on the desk 3 times')
 
+    await clock.advance(1000)
+    await feedRaw(0.002)
     expect(seen.configured).toEqual([])
-    expect(seen.toasts.at(-1)).toBe('Calibration failed: heard 0 of 3 knocks reaching 0.060g; knock harder.')
+    expect(seen.toasts.at(-1)).toBe('Calibration failed: heard no knock reaching 0.060g within 30s; knock harder.')
   })
 
   test('/slaps calibrate with two clear knocks and a soft one says to knock harder', SLOW, async ($, on) => {
-    const { clock, seen, feedRaw, slaps } = await harness($, on)
+    const { clock, seen, feedRaw, slaps, typeKey } = await harness($, on)
 
     await slaps('calibrate')
+    await typeKey()
     await feedRaw(0.03, 0.04)
     await clock.advance(6000)
     await feedRaw(0.3, 0.002, 0.2, 0.002, 0.045, 0.002)
@@ -551,18 +577,72 @@ describe('spank', () => {
   })
 
   test('/slaps calibrate with no typing cannot set a sensitivity near the sensor\'s rest', SLOW, async ($, on) => {
-    const { clock, seen, feedRaw, slaps } = await harness($, on)
+    const { clock, seen, feedRaw, slaps, typeKey } = await harness($, on)
 
     await slaps('calibrate')
+    await typeKey()
     await feedRaw(0.01, 0.012)
     await clock.advance(6000)
     // Soft taps around 0.02g: louder than the rest, but under the typing floor.
     await feedRaw(0.02, 0.003, 0.021, 0.003, 0.02, 0.003)
-    await clock.advance(8000)
+    await clock.advance(30000)
     await feedRaw(0.002)
 
     expect(seen.configured).toEqual([])
-    expect(seen.toasts.at(-1)).toMatch(/^Calibration failed: heard 0 of 3 knocks/)
+    expect(seen.toasts.at(-1)).toMatch(/^Calibration failed: heard no knock reaching 0\.03\dg within 30s/)
+  })
+
+  test('/slaps calibrate times the typing from the first key and the knocking from the first knock', { timeoutMs: 30000 }, async ($, on) => {
+    const { clock, seen, feedRaw, slaps, typeKey } = await harness($, on)
+
+    await slaps('calibrate')
+    await clock.settle()
+    expect(seen.statuses.at(-1)).toBe('spank: calibrating 1/2: start typing, without pressing Enter (6s from the first key)')
+    // Reading the instructions: a bump, a long pause, and no step moves on.
+    await feedRaw(0.5)
+    await clock.advance(20000)
+    await feedRaw(0.01)
+    expect(seen.statuses.at(-1)).toMatch(/start typing/)
+
+    // The key still lands in the box.
+    expect(await typeKey()).toEqual({ text: 'a', cursor: 1 })
+    await feedRaw(0.03)
+    expect(seen.statuses.at(-1)).toBe('spank: calibrating 1/2: keep typing (6s)')
+    await clock.advance(5000)
+    await feedRaw(0.04)
+    expect(seen.statuses.at(-1)).toBe('spank: calibrating 1/2: keep typing (6s)')
+    await clock.advance(1000)
+    await feedRaw(0.01)
+    expect(seen.toasts.at(-1)).toBe('Now knock on the desk 3 times')
+
+    // Typing on past the toast, under the bar (0.060g), then a long pause.
+    await feedRaw(0.05, 0.002)
+    await clock.advance(20000)
+    await feedRaw(0.002)
+    expect(seen.statuses.at(-1)).toBe('spank: calibrating 2/2: knock on the desk 3 times (8s from the first knock)')
+
+    await feedRaw(0.3, 0.002, 0.2, 0.002)
+    expect(seen.statuses.at(-1)).toBe('spank: calibrating 2/2: keep knocking (8s)')
+    await clock.advance(7000)
+    await feedRaw(0.25, 0.002)
+    await clock.advance(1000)
+    await feedRaw(0.002)
+
+    // The bump before typing is not typing: sqrt(0.04 * 0.2) = 0.089
+    expect(seen.configured).toEqual([{ key: 'spank.threshold', value: 0.089 }])
+  })
+
+  test('/slaps calibrate gives up when nothing is typed', SLOW, async ($, on) => {
+    const { clock, seen, feedRaw, slaps } = await harness($, on)
+
+    await slaps('calibrate')
+    await feedRaw(0.03)
+    await clock.advance(30000)
+    await feedRaw(0.03)
+
+    expect(seen.configured).toEqual([])
+    expect(seen.toasts.at(-1)).toBe('Calibration failed: nothing was typed in the prompt box within 30s.')
+    expect(seen.readersClosed).toBe(1)
   })
 
   test('a calibration that hears nothing gives up and stops swallowing slaps', SLOW, async ($, on) => {
@@ -572,7 +652,10 @@ describe('spank', () => {
     await feed(slapLine(3, 0.3))
     expect(seen.toasts.filter(t => t.endsWith('L3'))).toEqual([])
 
-    await clock.advance(19000)
+    // Waiting for the first key: 30s, and 5s of slack.
+    await clock.advance(34000)
+    expect(seen.toasts.at(-1)).not.toBe('Calibration failed: the sensor went quiet.')
+    await clock.advance(1000)
     expect(seen.toasts.at(-1)).toBe('Calibration failed: the sensor went quiet.')
     await feed(slapLine(3, 0.3))
     expect(seen.toasts.filter(t => t.endsWith('L3'))).toEqual(['いたっ！ L3'])
@@ -596,12 +679,13 @@ describe('spank', () => {
   })
 
   test('a second /slaps calibrate while one runs is turned away', SLOW, async ($, on) => {
-    const { clock, seen, feedRaw, slaps } = await harness($, on)
+    const { clock, seen, feedRaw, slaps, typeKey } = await harness($, on)
 
     await slaps('calibrate')
     expect((await slaps('calibrate')).text).toBe('Already calibrating; wait for its result.')
     expect(seen.spawned.filter(argv => argv.includes('--raw'))).toHaveLength(1)
 
+    await typeKey()
     await feedRaw(0.03)
     await clock.advance(6000)
     await feedRaw(0.3, 0.002, 0.2, 0.002, 0.25, 0.002)

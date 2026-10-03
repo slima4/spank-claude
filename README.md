@@ -114,7 +114,9 @@ Open `/config` in Claude Code (or `/plugin configure spank@spank-claude`):
 Changes apply right away. Not sure what sensitivity to pick? Run
 `/slaps calibrate`: type anything for 6 seconds (don't press Enter, or Claude
 gets it), then knock on the desk 3 times, and it sets the sensitivity between
-the two for you. The status line then shows it, e.g. `spank: armed (0.077g)`.
+the two for you. The 6 seconds start at your first key and the knocking at
+your first knock, so take your time reading; it waits up to 30 seconds for
+each. The status line then shows it, e.g. `spank: armed (0.077g)`.
 
 ## How it works
 

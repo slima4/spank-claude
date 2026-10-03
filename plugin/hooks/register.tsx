@@ -20,15 +20,17 @@ const FACE_MS = 3000
 const FACE_ROWS: Record<string, number> = { large: 16, medium: 12, small: 8, off: 0 }
 // Room the face leaves beside it for its line.
 const FACE_TEXT_COLUMNS = 24
-// /slaps calibrate: how long each step listens, and the least typing it
+// /slaps calibrate: how long each step listens (from the first key, and from
+// the first knock), how long it waits for either, and the least typing it
 // assumes. The sensor rests around 0.01g, so a calibration with no typing
 // still lands well above that.
 const CALIBRATE_TYPING_MS = 6000
 const CALIBRATE_KNOCKING_MS = 8000
+const CALIBRATE_WAIT_MS = 30000
 const CALIBRATE_FLOOR = 0.025
-// How long a calibration waits on its reader in all: past this, a reader gone
-// quiet is given up on, so it cannot keep swallowing slaps.
-const CALIBRATE_STALE_MS = CALIBRATE_TYPING_MS + CALIBRATE_KNOCKING_MS + 5000
+// How long past its step's longest a calibration waits on its reader: past
+// this, a reader gone quiet is given up on, so it cannot keep swallowing slaps.
+const CALIBRATE_SLACK_MS = 5000
 // How long /slaps image shows its test picture.
 const PROBE_MS = 10000
 
@@ -64,6 +66,10 @@ function lineSplitter() {
   }
 }
 
+// A calibration's steps: waiting for the first key, typing, waiting for the
+// first knock, knocking. The prompt.edit hook notes when the first key came.
+type Calibration = { step: 'waiting' | 'typing' | 'ready' | 'knocking'; typedAt?: number }
+
 // When the slaps happened: during a turn, during a turn they stopped, or
 // between turns (told once, as the next turn starts).
 type Moment = 'turn' | 'stopped' | 'idle'
@@ -89,7 +95,7 @@ let burst: Slap[] = []
 let burstTimer: Timer | undefined
 let playing: { level: number; stop: AbortController } | undefined
 let faceTimer: Timer | undefined
-let calibration: { step: 'typing' | 'knocking' } | undefined
+let calibration: Calibration | undefined
 let sensorStatus: string | undefined
 // /slaps image's picture (PNG, base64), and the band's id for blitting it.
 let probePng: string | undefined
@@ -190,15 +196,21 @@ async function tellClaude($: EngineInterface, moment: Moment) {
   }
 }
 
-// The sensitivity between typing and knocking: the geometric mean of the
-// loudest typing (at least CALIBRATE_FLOOR) and the softest of the three
-// strongest knocks, each of which must reach the bar, half again that typing.
-// A knock is a moment louder than the ones beside it, so a knock split across
-// two moments counts once. Also returns what it decided on, to log.
-function pickThreshold(typing: readonly number[], knocking: readonly number[]) {
+// The loudest typing, that at least CALIBRATE_FLOOR, and the bar a knock must
+// reach: half again the floored typing.
+function typingBar(typing: readonly number[]) {
   const typingMax = Math.max(0, ...typing)
   const floored = Math.max(CALIBRATE_FLOOR, typingMax)
-  const bar = floored * 1.5
+  return { typingMax, floored, bar: floored * 1.5 }
+}
+
+// The sensitivity between typing and knocking: the geometric mean of the
+// floored typing and the softest of the three strongest knocks, each of which
+// must reach the bar. A knock is a moment louder than the ones beside it, so a
+// knock split across two moments counts once. Also returns what it decided
+// on, to log.
+function pickThreshold(typing: readonly number[], knocking: readonly number[]) {
+  const { typingMax, floored, bar } = typingBar(typing)
   const peaks = knocking
     .filter((peak, i) => peak > (knocking[i - 1] ?? 0) && peak >= (knocking[i + 1] ?? 0))
     .sort((a, b) => b - a)
@@ -228,22 +240,34 @@ function report($: EngineInterface, text: string) {
 
 // /slaps calibrate: a slapd of its own (--raw: the loudest shake every 0.1s)
 // listens to typing, then to knocks, and the sensitivity setting goes between
-// them. Slaps are ignored meanwhile, and one runs at a time. Steps follow the
-// clock as readings arrive, and leaving the loop stops that slapd.
+// them. Typing is timed from the first key in the prompt box, and knocking
+// from the first moment loud enough to be a knock, so time spent reading the
+// instructions counts for neither. Slaps are ignored meanwhile, and one runs
+// at a time. Steps follow the clock as readings arrive, and leaving the loop
+// stops that slapd.
 async function calibrate($: EngineInterface) {
   // Set before any await, so a /slaps calibrate right behind this one sees it.
-  const run = { step: 'typing' as 'typing' | 'knocking' }
+  const run: Calibration = { step: 'waiting' }
   calibration = run
   // reader.return() waits behind a pull still waiting for a line, so each
-  // pull races the backstop instead.
+  // pull races the backstop instead. Each step sets it anew.
   let giveUp = () => {}
   const quiet = new Promise<'quiet'>(resolve => (giveUp = () => resolve('quiet')))
-  const backstop = $.clock.after(CALIBRATE_STALE_MS, () => giveUp())
+  let backstop = $.clock.after(CALIBRATE_WAIT_MS + CALIBRATE_SLACK_MS, () => giveUp())
+  const rearm = (stepMs: number) => {
+    backstop.cancel()
+    backstop = $.clock.after(stepMs + CALIBRATE_SLACK_MS, () => giveUp())
+  }
   const heard = { typing: [] as number[], knocking: [] as number[] }
   let failure: string | undefined
   try {
-    const startedAt = await $.clock.now()
-    $.ui.status(`spank: calibrating 1/2: type anything for ${CALIBRATE_TYPING_MS / 1000}s, without pressing Enter`)
+    // When the step began: the calibration, the first key, the end of the
+    // typing, the first knock.
+    let stepAt = await $.clock.now()
+    let bar = 0
+    $.ui.status(
+      `spank: calibrating 1/2: start typing, without pressing Enter (${CALIBRATE_TYPING_MS / 1000}s from the first key)`,
+    )
     const reader = $.process.spawn({ argv: [`${$.plugin.root}/bin/slapd`, '--raw', '--threshold', '100'] })
     const lines = lineSplitter()
     let lastError = ''
@@ -266,14 +290,46 @@ async function calibrate($: EngineInterface) {
         for (const line of lines(text)) {
           const parsed = parseLine(line)
           if (parsed?.type !== 'raw') continue
-          const elapsed = (await $.clock.now()) - startedAt
-          if (elapsed >= CALIBRATE_TYPING_MS + CALIBRATE_KNOCKING_MS) break reading
-          if (elapsed >= CALIBRATE_TYPING_MS && run.step === 'typing') {
-            run.step = 'knocking'
-            $.ui.status(`spank: calibrating 2/2: knock on the desk 3 times (${CALIBRATE_KNOCKING_MS / 1000}s)`)
+          const now = await $.clock.now()
+          if (run.step === 'waiting') {
+            if (run.typedAt === undefined) {
+              if (now - stepAt < CALIBRATE_WAIT_MS) continue
+              failure = `nothing was typed in the prompt box within ${CALIBRATE_WAIT_MS / 1000}s`
+              break reading
+            }
+            run.step = 'typing'
+            stepAt = run.typedAt
+            rearm(CALIBRATE_TYPING_MS)
+            $.ui.status(`spank: calibrating 1/2: keep typing (${CALIBRATE_TYPING_MS / 1000}s)`)
+          }
+          if (run.step === 'typing') {
+            if (now - stepAt < CALIBRATE_TYPING_MS) {
+              heard.typing.push(parsed.peak)
+              continue
+            }
+            run.step = 'ready'
+            stepAt = now
+            bar = typingBar(heard.typing).bar
+            rearm(CALIBRATE_WAIT_MS)
+            $.ui.status(
+              `spank: calibrating 2/2: knock on the desk 3 times (${CALIBRATE_KNOCKING_MS / 1000}s from the first knock)`,
+            )
             $.ui.toast('Now knock on the desk 3 times', { timeoutMs: CALIBRATE_KNOCKING_MS })
           }
-          heard[run.step].push(parsed.peak)
+          if (run.step === 'ready') {
+            // Typing on past the toast stays under the bar.
+            if (parsed.peak < bar) {
+              if (now - stepAt < CALIBRATE_WAIT_MS) continue
+              failure = `heard no knock reaching ${inG(bar)} within ${CALIBRATE_WAIT_MS / 1000}s; knock harder`
+              break reading
+            }
+            run.step = 'knocking'
+            stepAt = now
+            rearm(CALIBRATE_KNOCKING_MS)
+            $.ui.status(`spank: calibrating 2/2: keep knocking (${CALIBRATE_KNOCKING_MS / 1000}s)`)
+          }
+          if (now - stepAt >= CALIBRATE_KNOCKING_MS) break reading
+          heard.knocking.push(parsed.peak)
         }
       }
     } finally {
@@ -450,6 +506,16 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
+  // A calibration times its typing from the first key in the prompt box.
+  on('prompt.edit', async ($, e, next) => {
+    const run = calibration
+    if (run?.step === 'waiting' && run.typedAt === undefined) {
+      const now = await $.clock.now()
+      run.typedAt ??= now
+    }
+    return next(e)
+  })
+
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     // Read before any early return, so a later change redraws the band.
     const shown = await read($, face)
@@ -508,8 +574,9 @@ export const register: Register = (on, options) => {
       void calibrate($)
       return {
         text:
-          `Calibrating. Type anything for ${CALIBRATE_TYPING_MS / 1000} seconds without pressing Enter; ` +
-          `when the toast says so, knock on the desk 3 times (${CALIBRATE_KNOCKING_MS / 1000} seconds).`,
+          `Calibrating. Start typing in the prompt box, without pressing Enter: ` +
+          `${CALIBRATE_TYPING_MS / 1000} seconds from your first key. When the toast says so, knock on the desk ` +
+          `3 times: ${CALIBRATE_KNOCKING_MS / 1000} seconds from your first knock.`,
       }
     }
     if (arg === 'image') {
