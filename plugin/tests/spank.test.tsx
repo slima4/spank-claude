@@ -2,6 +2,9 @@ import type { On } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
+const CLIP_2 = 'assets/voices/level_2.mp3'
+const CLIP_4 = 'assets/voices/level_4.mp3'
+
 function slapLine(level: number, peak: number) {
   return JSON.stringify({ type: 'slap', ts: 1791041867213, peak, level })
 }
@@ -17,10 +20,14 @@ async function harness($: Engine, on: On, stored: Record<string, unknown> = { cl
   const seen = {
     statuses: [] as (string | undefined)[],
     toasts: [] as string[],
-    spoken: [] as string[],
+    played: [] as string[],
     aborted: [] as string[],
     notes: [] as string[],
   }
+
+  // Held clips play until the test releases them.
+  let holdClips = false
+  const held: (() => void)[] = []
 
   const lines: string[] = []
   let wake = () => {}
@@ -44,9 +51,10 @@ async function harness($: Engine, on: On, stored: Record<string, unknown> = { cl
     seen.toasts.push(e.text)
     return { value: undefined }
   })
-  on('audio.speak', ($, e) => {
-    seen.spoken.push(e.text)
-    return { value: { via: 'system' as const } }
+  on('audio.play', ($, e) => {
+    if (e.clip.asset !== undefined) seen.played.push(e.clip.asset)
+    if (holdClips) return new Promise(resolve => held.push(() => resolve({ value: undefined })))
+    return { value: undefined }
   })
   // The engine's own band: empty.
   on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
@@ -72,6 +80,12 @@ async function harness($: Engine, on: On, stored: Record<string, unknown> = { cl
       lines.push(...more)
       wake()
       await clock.settle()
+    },
+    holdClips() {
+      holdClips = true
+    },
+    releaseClips() {
+      for (const release of held.splice(0)) release()
     },
     turnStart: (turnId: string) => $.turn.start({ text: 'refactor everything', turnId }),
     turnComplete: (turnId: string) =>
@@ -99,11 +113,11 @@ describe('spank', () => {
 
     expect(seen.statuses).toContain('spank: armed')
     expect(seen.statuses).toContain('spank: 1 this session, last L3 (0.42g)')
-    expect(seen.toasts).toEqual(['Ouch! L3'])
+    expect(seen.toasts).toEqual(['いたっ！ L3'])
     expect((await slaps()).text).toBe('1 slaps this session, 42 all time; last one level 3, 0.42g.')
   })
 
-  test('each slap gets a line for its level, and the sensor keeps listening', SLOW, async ($, on) => {
+  test('each slap plays its level\'s clip, and the sensor keeps listening', SLOW, async ($, on) => {
     const { clock, seen, feed } = await harness($, on)
 
     await feed(slapLine(2, 0.2))
@@ -111,7 +125,7 @@ describe('spank', () => {
     await feed(slapLine(3, 0.31))
     await clock.advance(1600)
 
-    expect(seen.spoken).toEqual(['rude', 'ow ow ow'])
+    expect(seen.played).toEqual(['assets/voices/level_2.mp3', 'assets/voices/level_3.mp3'])
     expect(seen.aborted).toEqual([])
     expect(seen.statuses.at(-1)).toBe('spank: 2 this session, last L3 (0.31g)')
   })
@@ -123,7 +137,7 @@ describe('spank', () => {
     await feed(slapLine(5, 1.7))
 
     expect(seen.aborted).toEqual(['turn-1'])
-    expect(seen.spoken).toEqual(['okay, okay, stopping'])
+    expect(seen.played).toEqual(['assets/voices/level_5.mp3'])
     expect(seen.toasts).toEqual(['Stopped Claude. L5'])
     expect(seen.notes).toHaveLength(1)
     expect(seen.notes[0]).toContain('The user just physically slapped their laptop (')
@@ -137,7 +151,7 @@ describe('spank', () => {
     await clock.advance(1500)
 
     expect(seen.aborted).toEqual([])
-    expect(seen.spoken).toEqual(['stop hitting me!'])
+    expect(seen.played).toEqual(['assets/voices/level_5.mp3'])
   })
 
   test('slaps during a turn reach Claude as one note once they stop', SLOW, async ($, on) => {
@@ -195,8 +209,8 @@ describe('spank', () => {
 
     expect(seen.aborted).toEqual([])
     expect(seen.notes).toEqual([])
-    expect(seen.toasts).toEqual(['Ouch! L5'])
-    expect(seen.spoken).toEqual(['stop hitting me!'])
+    expect(seen.toasts).toEqual(['あぁっ…！ L5'])
+    expect(seen.played).toEqual(['assets/voices/level_5.mp3'])
   })
 
   test('/slaps claude on and off switch the Claude actions', SLOW, async ($, on) => {
@@ -230,7 +244,7 @@ describe('spank', () => {
     const drawn = await ui.find({ key: 'face' })
     expect(drawn?.type).toBe('Raster')
     expect(drawn?.props.rows).toBe(16)
-    expect(await ui.find({ text: 'stop hitting me!' })).toBeDefined()
+    expect(await ui.find({ text: 'あぁっ…！' })).toBeDefined()
     expect(await ui.find({ text: /level 5 of 5, 1\.63g/ })).toBeDefined()
 
     await clock.advance(3000)
@@ -243,15 +257,28 @@ describe('spank', () => {
     await narrow.unmount()
   })
 
+  test('a harder slap cuts in on a clip; a softer one waits it out', SLOW, async ($, on) => {
+    const { seen, feed, holdClips, releaseClips } = await harness($, on)
+
+    holdClips()
+    await feed(slapLine(2, 0.2))
+    await feed(slapLine(1, 0.07))
+    await feed(slapLine(4, 0.6))
+    await feed(slapLine(3, 0.3))
+    releaseClips()
+
+    expect(seen.played).toEqual([CLIP_2, CLIP_4])
+  })
+
   test('/slaps mute keeps the laptop quiet', SLOW, async ($, on) => {
     const { seen, feed, slaps } = await harness($, on)
 
     expect((await slaps('mute')).text).toBe('Laptop voice off.')
     await feed(slapLine(3, 0.4))
-    expect(seen.spoken).toEqual([])
+    expect(seen.played).toEqual([])
 
     expect((await slaps('unmute')).text).toBe('Laptop voice on.')
     await feed(slapLine(3, 0.4))
-    expect(seen.spoken).toHaveLength(1)
+    expect(seen.played).toEqual(['assets/voices/level_3.mp3'])
   })
 })

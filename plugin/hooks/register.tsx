@@ -24,16 +24,9 @@ const FACE_TEXT_COLUMNS = 24
 // How long /slaps image shows its test picture.
 const PROBE_MS = 10000
 
-const OUCH = ['Ouch!', 'Hey!', 'Ow ow ow', 'Rude.', 'I felt that.', 'Easy there.', 'WHY?!']
-
-// What the laptop says out loud, by level 1-5.
-const VOICE = [
-  ['hey', 'ow'],
-  ['ouch', 'rude'],
-  ['ow ow ow', 'I felt that'],
-  ['what did I do?', 'okay, okay'],
-  ['aaaah!', 'stop hitting me!'],
-] as const
+// What each level's clip (assets/voices/level_<n>.mp3) says, shown beside
+// her face and in the toast.
+const CAPTIONS = ['んっ！', 'あっ！', 'いたっ！', 'きゃっ！', 'あぁっ…！'] as const
 
 type Line = { type: 'start' } | ({ type: 'slap' } & Slap)
 
@@ -65,12 +58,12 @@ function note(slaps: readonly Slap[], moment: Moment) {
   return `[spank] ${when} ${what} (accelerometer; ${reading}). ${ask}`
 }
 
-// Slaps not yet told to Claude, the timer that tells it, whether the laptop
-// is mid-sentence, and the timer that hides the face. Reset by register, so
-// each load starts clean.
+// Slaps not yet told to Claude, the timer that tells it, the voice clip
+// playing (its level, and how to stop it), and the timer that hides the face.
+// Reset by register, so each load starts clean.
 let burst: Slap[] = []
 let burstTimer: Timer | undefined
-let isSpeaking = false
+let playing: { level: number; stop: AbortController } | undefined
 let faceTimer: Timer | undefined
 // /slaps image's picture (PNG, base64), and the band's id for blitting it.
 let probePng: string | undefined
@@ -88,14 +81,18 @@ async function showFace($: EngineInterface, shown: FaceShown) {
   faceTimer = $.clock.after(FACE_MS, () => void update($, face, () => null))
 }
 
-function say($: EngineInterface, text: string) {
-  if (isSpeaking) return
-  isSpeaking = true
+// Plays the level's clip. A harder slap cuts off a softer clip still
+// playing; one no harder than it is skipped, so a burst stays one voice.
+function voice($: EngineInterface, level: number) {
+  if (playing !== undefined && playing.level >= level) return
+  playing?.stop.abort()
+  const clip = { level, stop: new AbortController() }
+  playing = clip
   $.audio
-    .speak(text)
+    .play({ asset: `assets/voices/level_${level}.mp3` }, { signal: clip.stop.signal })
     .catch(() => {})
     .finally(() => {
-      isSpeaking = false
+      if (playing === clip) playing = undefined
     })
 }
 
@@ -130,12 +127,12 @@ async function onSlap($: EngineInterface, slap: Slap) {
   const isStopping = isClaudeOn && turnId !== null && slap.level >= STOP_LEVEL
 
   $.ui.status(`spank: ${n} this session, last L${slap.level} (${slap.peak.toFixed(2)}g)`)
-  $.ui.toast(isStopping ? `Stopped Claude. L${slap.level}` : `${OUCH[(n - 1) % OUCH.length]} L${slap.level}`)
 
-  const lines = VOICE[Math.min(Math.max(slap.level, 1), 5) - 1] ?? VOICE[0]
-  const line = isStopping ? 'okay, okay, stopping' : lines[n % lines.length] ?? lines[0]
-  if ((await $.store.get('muted')) !== true) say($, line)
-  await showFace($, { level: slap.level, peak: slap.peak, line })
+  const level = Math.min(Math.max(slap.level, 1), 5)
+  const line = CAPTIONS[level - 1] ?? CAPTIONS[0]
+  $.ui.toast(isStopping ? `Stopped Claude. L${level}` : `${line} L${level}`)
+  if ((await $.store.get('muted')) !== true) voice($, level)
+  await showFace($, { level, peak: slap.peak, line })
 
   if (!isClaudeOn) return
   burst.push(slap)
@@ -182,7 +179,8 @@ async function listen($: EngineInterface) {
 export const register: Register = on => {
   burst = []
   cancelBurstTimer()
-  isSpeaking = false
+  playing?.stop.abort()
+  playing = undefined
   faceTimer?.cancel()
   faceTimer = undefined
   probePng = undefined
