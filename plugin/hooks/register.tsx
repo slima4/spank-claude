@@ -238,8 +238,9 @@ function inG(value: number) {
   return `${value.toFixed(3)}g`
 }
 
-// A calibration's outcome: a toast, and a line in the transcript, which keeps
-// the whole text when the toast gets only one line.
+// An outcome told after the fact (a calibration's, a failed switch): a toast,
+// and a line in the transcript, which keeps the whole text when the toast
+// gets only one line.
 function report($: EngineInterface, text: string) {
   $.ui.toast(text, { timeoutMs: 10000 })
   $.ui.log(`spank: ${text}`)
@@ -367,23 +368,58 @@ async function calibrate($: EngineInterface) {
   // Told before saving: saving reloads the plugin, which may drop anything
   // this module says afterwards.
   report($, `Sensitivity set to ${picked.threshold}g (typing ${inG(picked.typingMax)}, knocks ${inG(picked.softest)}).`)
-  const unsaved = await saveThreshold($, picked.threshold).catch(error => String(error))
+  const unsaved = await saveSetting($, 'threshold', picked.threshold, 'sensitivity').catch(error => String(error))
   if (unsaved !== undefined) {
     report($, `Could not save the sensitivity: ${unsaved}. Set "Slap sensitivity" in /config.`)
   }
 }
 
-// Writes the sensitivity as the person would in /config; the module then
+// Writes a userConfig option as the person would in /config; the module then
 // reloads with it. The row is looked up, not spelled, since its key depends
-// on how the plugin was loaded. Resolves undefined once saved, or why not.
-async function saveThreshold($: EngineInterface, threshold: number): Promise<string | undefined> {
+// on how the plugin was loaded. Resolves undefined once saved, or why not,
+// calling the setting by its label.
+async function saveSetting(
+  $: EngineInterface,
+  option: string,
+  value: string | number,
+  label: string,
+): Promise<string | undefined> {
   const rows = await $.config.list()
   const row = rows.find(
-    r => r.key === `${$.plugin.name}.threshold` || (r.provider.plugin === $.plugin.name && r.key.endsWith('.threshold')),
+    r => r.key === `${$.plugin.name}.${option}` || (r.provider.plugin === $.plugin.name && r.key.endsWith(`.${option}`)),
   )
-  if (row === undefined) return 'no sensitivity row in /config'
-  const set = await $.config.set({ key: row.key, value: threshold })
+  if (row === undefined) return `no ${label} row in /config`
+  const set = await $.config.set({ key: row.key, value })
   return set.deny
+}
+
+function titled(id: string) {
+  return id.charAt(0).toUpperCase() + id.slice(1)
+}
+
+// /slaps who [series]: lists the face series, or switches to one by saving
+// the face_series setting. Saving reloads the module, so the reply goes out
+// first and only a failure is told afterwards; until the reload the series is
+// switched here already, and switched back if saving fails. A calibration
+// under way would not survive the reload, so it holds the switch off.
+function who($: EngineInterface, wanted: string) {
+  const ids = Object.keys(SERIES)
+  if (wanted === '') return ids.map(id => (id === settings.series ? `${id} (current)` : id)).join(', ')
+  if (!isSeries(wanted)) return `No face series "${wanted}". Try: ${ids.join(', ')}.`
+  if (wanted === settings.series) return `${titled(wanted)} already. Slap away.`
+  if (calibration !== undefined) return 'Calibrating; switch after it finishes.'
+
+  const { series } = settings
+  settings = { ...settings, series: wanted }
+  void saveSetting($, 'face_series', wanted, 'face series')
+    .catch(error => String(error))
+    .then(unsaved => {
+      if (unsaved === undefined) return
+      settings = { ...settings, series }
+      report($, `Could not switch to ${titled(wanted)}: ${unsaved}. Set "Face series" in /config.`)
+    })
+    .catch(() => {})
+  return `${titled(wanted)} now. Slap away.`
 }
 
 async function onSlap($: EngineInterface, slap: Slap) {
@@ -501,8 +537,8 @@ export const register: Register = (on, options) => {
     await markActive($).catch(() => {})
     await $.command.register({
       name: 'slaps',
-      description: 'How many times you hit the laptop; calibrate, mute, or let slaps reach Claude',
-      argumentHint: '[calibrate|mute|unmute|claude on|claude off|image]',
+      description: 'How many times you hit the laptop; pick who gets hit, calibrate, mute, or let slaps reach Claude',
+      argumentHint: '[who [series]|calibrate|mute|unmute|claude on|claude off|image]',
       immediate: true,
     })
     void listen($)
@@ -573,6 +609,8 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'slaps' }, async ($, e) => {
     await markActive($).catch(() => {})
     const arg = e.args.trim()
+    const [subcommand, ...rest] = arg.split(/\s+/)
+    if (subcommand === 'who') return { text: who($, rest.join(' ').toLowerCase()) }
     if (arg === 'mute' || arg === 'unmute') {
       await $.store.set('muted', arg === 'mute')
       return { text: arg === 'mute' ? 'Laptop voice off.' : 'Laptop voice on.' }

@@ -69,6 +69,8 @@ Uninstall: `claude plugin uninstall spank@spank-claude`.
 | Command              | Does                                                        |
 | -------------------- | ----------------------------------------------------------- |
 | `/slaps`             | Your score: this session, all time, and the last hit.       |
+| `/slaps who`         | Lists the face series; the current one is marked.           |
+| `/slaps who natsu`   | Natsu gets slapped now (any series name works).             |
 | `/slaps calibrate`   | Type 6 s (no Enter), knock 3 times; it picks the sensitivity. |
 | `/slaps mute`        | Silences her. The faces still judge you.                    |
 | `/slaps unmute`      | She's back.                                                 |
@@ -96,7 +98,8 @@ last typed a prompt or a `/slaps` command in). One laptop, one victim.
 ## Face series
 
 Each face series is one character: five faces, one per level, and a voice.
-Pick one under "Face series" in `/config`.
+Switch with `/slaps who <series>` (`/slaps who` lists them), or under
+"Face series" in `/config`.
 
 | Series   | Voice    | Face                                                          |
 | -------- | -------- | ------------------------------------------------------------- |

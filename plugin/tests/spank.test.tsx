@@ -40,6 +40,7 @@ type World = {
   hasBinary?: boolean
   swiftc?: { exitCode: number; stderr: string }
   hasThresholdRow?: boolean
+  hasSeriesRow?: boolean
   rawExits?: string
 }
 
@@ -139,12 +140,18 @@ async function harness($: Engine, on: On, stored: Record<string, unknown> = { cl
     if (note !== undefined) seen.notes.push(note)
     return { value: undefined }
   })
-  // The /config rows: the engine's own, then this plugin's sensitivity.
+  // The /config rows: the engine's own, then this plugin's sensitivity and
+  // face series.
   on('config.list', () => ({
     value: [
       { key: 'theme', label: 'Theme', kind: 'choice' as const, value: 'dark', provider: { plugin: 'core', tier: 'core' as const }, isLocked: false },
-      { key: 'spank.threshold', label: 'Slap sensitivity (g)', kind: 'number' as const, value: 0.05, provider: { plugin: 'spank', tier: 'user' as const }, isLocked: false },
-    ].slice(0, world.hasThresholdRow === false ? 1 : 2),
+      ...(world.hasThresholdRow === false
+        ? []
+        : [{ key: 'spank.threshold', label: 'Slap sensitivity (g)', kind: 'number' as const, value: 0.05, provider: { plugin: 'spank', tier: 'user' as const }, isLocked: false }]),
+      ...(world.hasSeriesRow === false
+        ? []
+        : [{ key: 'spank.face_series', label: 'Face series', kind: 'choice' as const, value: 'sakura', provider: { plugin: 'spank', tier: 'user' as const }, isLocked: false }]),
+    ],
   }))
   on('config.set', ($, e) => {
     seen.configured.push({ key: e.key, value: e.value })
@@ -490,6 +497,50 @@ describe('spank', () => {
   test('/slaps image with no picture for the series says so', SLOW, async ($, on) => {
     const { slaps } = await harness($, on)
     expect((await slaps('image')).text).toMatch(/^Image probe: no picture to try \(.*\/assets\/faces\/sakura\/level_1\.png is missing\)\.$/)
+  })
+
+  test('/slaps who lists the face series and marks the current one', SLOW, async ($, on) => {
+    const { slaps } = await harness($, on)
+    expect((await slaps('who')).text).toBe('sakura (current), natsu')
+  })
+
+  test('/slaps who natsu switches the face series', SLOW, async ($, on) => {
+    const { clock, seen, feed, slaps } = await harness($, on)
+    expect((await slaps('who \t Natsu')).text).toBe('Natsu now. Slap away.')
+    await clock.settle()
+    expect(seen.configured).toEqual([{ key: 'spank.face_series', value: 'natsu' }])
+
+    // Switched already, before the reload that saving brings.
+    expect((await slaps('who')).text).toBe('sakura, natsu (current)')
+    expect((await slaps('who natsu')).text).toBe('Natsu already. Slap away.')
+    await feed(slapLine(3, 0.3))
+    expect(seen.played).toEqual(['assets/voices/natsu/level_3.mp3'])
+    expect(seen.configured).toHaveLength(1)
+  })
+
+  test('/slaps who waits for a calibration to finish', SLOW, async ($, on) => {
+    const { clock, seen, slaps } = await harness($, on)
+    await slaps('calibrate')
+    expect((await slaps('who natsu')).text).toBe('Calibrating; switch after it finishes.')
+    await clock.settle()
+    expect(seen.configured).toEqual([])
+  })
+
+  test('/slaps who turns away an unknown name and the current one', SLOW, async ($, on) => {
+    const { clock, seen, slaps } = await harness($, on)
+    expect((await slaps('who hana')).text).toBe('No face series "hana". Try: sakura, natsu.')
+    expect((await slaps('who sakura')).text).toBe('Sakura already. Slap away.')
+    await clock.settle()
+    expect(seen.configured).toEqual([])
+  })
+
+  test('/slaps who says so when it cannot save the face series', SLOW, async ($, on) => {
+    const { clock, seen, slaps } = await harness($, on, { claude: true }, { hasSeriesRow: false })
+    await slaps('who natsu')
+    await clock.settle()
+    expect(seen.configured).toEqual([])
+    expect(seen.toasts.at(-1)).toBe('Could not switch to Natsu: no face series row in /config. Set "Face series" in /config.')
+    expect((await slaps('who')).text).toBe('sakura (current), natsu')
   })
 
   test('only the session used last reacts to a slap', SLOW, async ($, on) => {
