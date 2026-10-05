@@ -13,8 +13,11 @@ const BAND = {
   props: { hasSurvey: false, isWorking: false, maxRows: 30, bodyColumns: 120, scroll: { offset: 0, bodyRows: 30 }, view: {} },
 }
 
+const CLIP_1 = 'assets/voices/sakura/level_1.mp3'
 const CLIP_2 = 'assets/voices/sakura/level_2.mp3'
+const CLIP_3 = 'assets/voices/sakura/level_3.mp3'
 const CLIP_4 = 'assets/voices/sakura/level_4.mp3'
+const CLIP_5 = 'assets/voices/sakura/level_5.mp3'
 
 function queue() {
   return { lines: [] as string[], wake: () => {} }
@@ -24,8 +27,12 @@ function raw(peak: number) {
   return JSON.stringify({ type: 'raw', peak, noise: 0.001 })
 }
 
-function slapLine(level: number, peak: number) {
-  return JSON.stringify({ type: 'slap', ts: 1791041867213, peak, level })
+// When slapd heard the first slap; `ts` is the sensor's clock, which times
+// combos.
+const T0 = 1791041867213
+
+function slapLine(level: number, peak: number, ts = T0) {
+  return JSON.stringify({ type: 'slap', ts, peak, level })
 }
 
 // The engine beneath the plugin: slapd's stdout fed line by line, and a
@@ -51,6 +58,7 @@ async function harness($: Engine, on: On, stored: Record<string, unknown> = { cl
     statuses: [] as (string | undefined)[],
     toasts: [] as string[],
     played: [] as string[],
+    clipsCut: 0,
     aborted: [] as string[],
     notes: [] as string[],
     ran: [] as string[][],
@@ -123,11 +131,18 @@ async function harness($: Engine, on: On, stored: Record<string, unknown> = { cl
     seen.toasts.push(e.text)
     return { value: undefined }
   })
-  on('audio.play', ($, e) => {
+  on('audio.play', ($, e, next) => {
     if (e.clip.asset !== undefined) seen.played.push(e.clip.asset)
     seen.gains.push(e.gain ?? 1)
-    if (holdClips) return new Promise(resolve => held.push(() => resolve({ value: undefined })))
-    return { value: undefined }
+    if (!holdClips) return { value: undefined }
+    return new Promise(resolve => {
+      const done = () => resolve({ value: undefined })
+      held.push(done)
+      next.signal.addEventListener('abort', () => {
+        seen.clipsCut += 1
+        done()
+      })
+    })
   })
   // The engine's own band: empty.
   on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
@@ -376,17 +391,150 @@ describe('spank', () => {
     await narrow.unmount()
   })
 
-  test('a harder slap cuts in on a clip; a softer one waits it out', SLOW, async ($, on) => {
-    const { seen, feed, holdClips, releaseClips } = await harness($, on)
+  test('each slap cuts off the clip still playing with its own', SLOW, async ($, on) => {
+    const { clock, seen, feed, holdClips, releaseClips } = await harness($, on)
 
     holdClips()
-    await feed(slapLine(2, 0.2))
-    await feed(slapLine(1, 0.07))
-    await feed(slapLine(4, 0.6))
-    await feed(slapLine(3, 0.3))
+    await feed(slapLine(4, 0.6, T0))
+    await clock.advance(1100)
+    await feed(slapLine(1, 0.07, T0 + 1100))
+    await clock.advance(1100)
+    await feed(slapLine(1, 0.08, T0 + 2200))
+    expect(seen.clipsCut).toBe(2)
     releaseClips()
 
-    expect(seen.played).toEqual([CLIP_2, CLIP_4])
+    expect(seen.played).toEqual([CLIP_4, CLIP_1, CLIP_1])
+  })
+
+  test('slaps in a row build up a combo: +1 from the third, +2 from the sixth', SLOW, async ($, on) => {
+    const { clock, seen, feed } = await harness($, on)
+    const ui = await $.ui.mount(BAND)
+
+    for (let i = 0; i < 7; i++) {
+      await feed(slapLine(1, 0.07, T0 + i * 600))
+      await clock.advance(600)
+    }
+    expect(seen.played).toEqual([CLIP_1, CLIP_1, CLIP_2, CLIP_2, CLIP_2, CLIP_3, CLIP_3])
+    expect(await ui.find({ text: 'いたっ！' })).toBeDefined()
+    expect(await ui.find({ text: /level 3 of 5, 0\.07g, 7 in a row/ })).toBeDefined()
+    // A toast as each level is reached, none for the slaps between.
+    expect(seen.toasts).toEqual(['んっ！ L1', 'あっ！ L2', 'いたっ！ L3'])
+    // The score keeps what the sensor read.
+    expect(seen.statuses.at(-1)).toBe('spank: 7 this session, last L1 (0.07g)')
+
+    // More than a second's pause ends it.
+    await feed(slapLine(1, 0.07, T0 + 6 * 600 + 1100))
+    expect(seen.played.at(-1)).toBe(CLIP_1)
+    expect(await ui.find({ text: /level 1 of 5, 0\.07g$/ })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('a combo is timed by the sensor, not by when its lines arrive', SLOW, async ($, on) => {
+    const { seen, feed } = await harness($, on, {})
+
+    // Read together, heard 1.2s apart: no combo.
+    await feed(slapLine(2, 0.2, T0), slapLine(2, 0.2, T0 + 1200), slapLine(2, 0.2, T0 + 2400))
+    expect(seen.played).toEqual([CLIP_2, CLIP_2, CLIP_2])
+  })
+
+  test('a combo never goes past level 5', SLOW, async ($, on) => {
+    const { seen, feed } = await harness($, on, {})
+
+    await feed(slapLine(5, 1.4, T0), slapLine(5, 1.4, T0 + 500), slapLine(5, 1.4, T0 + 1000))
+    expect(seen.played).toEqual([CLIP_5, CLIP_5, CLIP_5])
+  })
+
+  test('a combo reaching the stop level stops Claude', SLOW, async ($, on) => {
+    const { clock, seen, feed, turnStart } = await harness($, on)
+
+    await turnStart('turn-1')
+    for (let i = 0; i < 5; i++) {
+      await feed(slapLine(2, 0.2, T0 + i * 500))
+      await clock.advance(500)
+    }
+    expect(seen.aborted).toEqual([])
+
+    await feed(slapLine(2, 0.2, T0 + 5 * 500))
+    expect(seen.aborted).toEqual(['turn-1'])
+    expect(seen.toasts.at(-1)).toBe('Stopped Claude. L4')
+    expect(seen.notes).toHaveLength(1)
+    expect(seen.notes[0]).toContain('slapped their laptop 6 times (accelerometer; strongest hit level 2 of 5, 0.20g)')
+    expect(seen.notes[0]).toContain('They came fast enough to stop your turn')
+  })
+
+  test('a combo with a level 1 graze in it never stops Claude', SLOW, async ($, on) => {
+    const { clock, seen, feed, turnStart } = await harness($, on)
+
+    await turnStart('turn-1')
+    // Steady shaking: level 1 after level 1, up to a level 4 combo.
+    for (let i = 0; i < 9; i++) {
+      await feed(slapLine(1, 0.07, T0 + i * 450))
+      await clock.advance(450)
+    }
+    await feed(slapLine(2, 0.2, T0 + 9 * 450))
+    expect(seen.played.at(-1)).toBe('assets/voices/sakura/level_5.mp3')
+    expect(seen.aborted).toEqual([])
+
+    // A hard slap still does.
+    await feed(slapLine(4, 0.6, T0 + 10 * 450))
+    expect(seen.aborted).toEqual(['turn-1'])
+    expect(seen.notes.at(-1)).toContain('It was hard enough to stop your turn')
+  })
+
+  test('a combo begun before a turn does not carry into it', SLOW, async ($, on) => {
+    const { seen, feed, turnStart } = await harness($, on)
+
+    await feed(...[0, 1, 2, 3, 4].map(i => slapLine(2, 0.2, T0 + i * 500)))
+    await turnStart('turn-1')
+    await feed(slapLine(2, 0.2, T0 + 5 * 500))
+
+    expect(seen.played.at(-1)).toBe(CLIP_2)
+    expect(seen.aborted).toEqual([])
+  })
+
+  test('slaps in a row put up one toast at a time', SLOW, async ($, on) => {
+    const { clock, seen, feed } = await harness($, on, {})
+
+    await feed(slapLine(3, 0.3, T0))
+    await clock.advance(1500)
+    await feed(slapLine(2, 0.2, T0 + 1500))
+    await clock.advance(1500)
+    await feed(slapLine(3, 0.3, T0 + 3000))
+    expect(seen.toasts).toEqual(['いたっ！ L3'])
+    expect(seen.played).toEqual([CLIP_3, CLIP_2, CLIP_3])
+
+    // Harder than the one showing.
+    await clock.advance(500)
+    await feed(slapLine(4, 0.6, T0 + 3500))
+    expect(seen.toasts).toEqual(['いたっ！ L3', 'きゃっ！ L4'])
+
+    // The L4 one's gone by now.
+    await clock.advance(4000)
+    await feed(slapLine(2, 0.2, T0 + 7500))
+    expect(seen.toasts).toEqual(['いたっ！ L3', 'きゃっ！ L4', 'あっ！ L2'])
+  })
+
+  test('slaps that keep coming reach Claude 4s after the first', SLOW, async ($, on) => {
+    const { clock, seen, feed, turnStart } = await harness($, on)
+
+    await turnStart('turn-1')
+    await feed(slapLine(1, 0.07, T0))
+    for (let i = 1; i < 4; i++) {
+      await clock.advance(1200)
+      await feed(slapLine(1, 0.07, T0 + i * 1200))
+    }
+    // The last slap came at 3.6s: its quiet 1.5s would end at 5.1s.
+    await clock.advance(300)
+    expect(seen.notes).toEqual([])
+    await clock.advance(100)
+    expect(seen.notes).toHaveLength(1)
+    expect(seen.notes[0]).toContain('The user just physically slapped their laptop 4 times')
+
+    // The next slap starts a burst of its own.
+    await feed(slapLine(2, 0.2, T0 + 4800))
+    await clock.advance(1500)
+    expect(seen.notes).toHaveLength(2)
+    expect(seen.notes[1]).toContain('The user just physically slapped their laptop (')
   })
 
   test('the first run builds slapd from source, then starts it', SLOW, async ($, on) => {

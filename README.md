@@ -38,6 +38,16 @@ message — and a hard enough slap stops it mid-turn.
 | 4     | 0.5–1 g      | きゃっ！    | やっ！      | いやっ！    | Claude deleted the tests to make them pass. |
 | 5     | 1 g and up   | あぁっ…！   | うわぁっ！  | きゃあっ！  | Production.                        |
 
+### Combos
+
+Keep slapping, less than a second apart, and it adds up: from the third slap
+in a row on, each counts one level harder than it hit, from the sixth two
+levels, and so on, so a dozen soft taps make her scream. Each slap cuts her off
+and gets a yelp of its own, and the face says how many came in a row. A toast
+goes up only when none is showing or the level climbs past it, so the corner
+of the screen stays tidy. The score (`/slaps`, the status line) still keeps
+what the sensor read.
+
 ## What you need
 
 - An Apple Silicon MacBook with the motion sensor: M1 Pro / Max or newer. The
@@ -89,12 +99,16 @@ Uninstall: `claude plugin uninstall spank@spank-claude`.
 With `/slaps claude on`, every slap becomes a quiet note in the conversation:
 *"The user just physically slapped their laptop 2 times (strongest hit level 3
 of 5). Take it as nonverbal frustration…"* Claude reads it on its next step,
-acknowledges it, and reconsiders what it was doing. Slaps while it's idle are saved up and delivered
-as one note with your next message, so it gets the whole story at once.
+acknowledges it, and reconsiders what it was doing. Slaps that keep coming are
+told as one note once you pause, or 4 seconds after the first, whichever comes
+sooner. Slaps while it's idle are saved up and delivered as one note with your
+next message, so it gets the whole story at once.
 
-A level 4+ slap while Claude is working stops the turn on the spot. Fair
-warning: a shell command Claude already started keeps running in the
-background; the slap stops Claude, not the command.
+A level 4+ slap while Claude is working stops the turn on the spot, and so
+does a combo that builds up to level 4, as long as none of its slaps was a
+level 1 graze (so a bumpy train never does). Fair warning: a shell command
+Claude already started keeps running in the background; the slap stops Claude,
+not the command.
 
 ### Several sessions
 

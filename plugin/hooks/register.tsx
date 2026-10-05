@@ -14,10 +14,19 @@ const face = atom({ plugin: 'spank', key: 'face' } as const, null)
 // Whether /slaps image is drawing its test picture.
 const probe = atom({ plugin: 'spank', key: 'probe' } as const, false)
 
-// Slaps this close together during a turn reach Claude as one note.
+// Slaps this close together during a turn reach Claude as one note, told at
+// most this long after the first, so slapping on and on still gets through.
 const BURST_MS = 1500
+const BURST_MAX_MS = 4000
+// Slaps at most this far apart, by the sensor's clock, are a combo: from its
+// COMBO_STEP-th slap on each counts one level harder than it hit, from its
+// 2 x COMBO_STEP-th two levels, and so on.
+const COMBO_MS = 1000
+const COMBO_STEP = 3
 // How long a slap's face stays above the prompt.
 const FACE_MS = 3000
+// How long a slap's toast stays; slaps meanwhile add none of their own.
+const TOAST_MS = 4000
 // The tallest face per face_size setting, in rows; 0 draws none.
 const FACE_ROWS: Record<string, number> = { large: 16, medium: 12, small: 8, off: 0 }
 // Room the face leaves beside it for its line.
@@ -68,30 +77,37 @@ function lineSplitter() {
 // first knock, knocking. The prompt.edit hook notes when the first key came.
 type Calibration = { step: 'waiting' | 'typing' | 'ready' | 'knocking'; typedAt?: number }
 
-// When the slaps happened: during a turn, during a turn they stopped, or
-// between turns (told once, as the next turn starts).
-type Moment = 'turn' | 'stopped' | 'idle'
+// When the slaps happened: during a turn, during a turn a hard one stopped,
+// during a turn a combo stopped, or between turns (told once, as the next
+// turn starts).
+type Moment = 'turn' | 'stopped' | 'combo' | 'idle'
 
 function note(slaps: readonly Slap[], moment: Moment) {
   const strongest = slaps.reduce((a, b) => (b.peak > a.peak ? b : a))
   const what = slaps.length === 1 ? 'slapped their laptop' : `slapped their laptop ${slaps.length} times`
   const reading = `strongest hit level ${strongest.level} of 5, ${strongest.peak.toFixed(2)}g`
   const when = moment === 'idle' ? 'Since your last reply the user physically' : 'The user just physically'
+  const how = moment === 'stopped' ? 'It was hard enough' : 'They came fast enough'
   const ask =
-    moment === 'stopped'
-      ? 'It was hard enough to stop your turn. Acknowledge the slap briefly and check with the user before redoing that work.'
+    moment === 'stopped' || moment === 'combo'
+      ? `${how} to stop your turn. Acknowledge the slap briefly and check with the user before redoing that work.`
       : 'Take it as nonverbal frustration with what you are doing: acknowledge it briefly, reconsider your current approach, and ask what is wrong if it is not clear.'
 
   return `[spank] ${when} ${what} (accelerometer; ${reading}). ${ask}`
 }
 
-// Slaps not yet told to Claude, the timer that tells it, the voice clip
-// playing (its level, and how to stop it), the timer that hides the face, a
+// Slaps not yet told to Claude, when the first of them came, the timer that
+// tells it, the combo under way (its slaps, when the last hit, and the
+// softest level among them), the last slap toast (when, and its level), how
+// to stop the voice clip playing, the timer that hides the face, a
 // calibration under way, and the status line the sensor last set (which a
 // calibration puts back). Reset by register, so each load starts clean.
 let burst: Slap[] = []
+let burstSince = 0
 let burstTimer: Timer | undefined
-let playing: { level: number; stop: AbortController } | undefined
+let combo: { count: number; at: number; weakest: number } | undefined
+let toast: { at: number; level: number } | undefined
+let playing: AbortController | undefined
 let faceTimer: Timer | undefined
 let calibration: Calibration | undefined
 let sensorStatus: string | undefined
@@ -166,17 +182,17 @@ async function showFace($: EngineInterface, shown: FaceShown) {
   faceTimer = $.clock.after(FACE_MS, () => void update($, face, () => null))
 }
 
-// Plays the level's clip. A harder slap cuts off a softer clip still
-// playing; one no harder than it is skipped, so a burst stays one voice.
+// Plays the level's clip, cutting off the one still playing, so each slap
+// gets its own yelp. slapd hears a hit at most every 0.4s, so a cut clip has
+// had its say.
 function voice($: EngineInterface, level: number) {
   if (settings.volume <= 0) return
-  if (playing !== undefined && playing.level >= level) return
-  playing?.stop.abort()
-  const clip = { level, stop: new AbortController() }
+  playing?.abort()
+  const clip = new AbortController()
   playing = clip
   const asset = `assets/voices/${voiceOf().id}/level_${level}.mp3`
   $.audio
-    .play({ asset }, { signal: clip.stop.signal, gain: settings.volume })
+    .play({ asset }, { signal: clip.signal, gain: settings.volume })
     .catch(() => {})
     .finally(() => {
       if (playing === clip) playing = undefined
@@ -426,6 +442,18 @@ async function onSlap($: EngineInterface, slap: Slap) {
   if (calibration !== undefined) return
   if (!(await isActive($))) return
 
+  const now = await $.clock.now()
+  const gap = combo === undefined ? undefined : slap.ts - combo.at
+  const prior = gap !== undefined && gap >= 0 && gap <= COMBO_MS ? combo : undefined
+  combo = {
+    count: (prior?.count ?? 0) + 1,
+    at: slap.ts,
+    weakest: Math.min(prior?.weakest ?? slap.level, slap.level),
+  }
+  // The slap's level with the combo's added: what she shows and says, and
+  // what stops Claude. The score keeps what the sensor read.
+  const level = Math.min(Math.max(slap.level, 1) + Math.floor(combo.count / COMBO_STEP), 5)
+
   const n = await update($, count, c => c + 1)
   await update($, last, () => slap)
   await $.store.set('total', Number((await $.store.get('total')) ?? 0) + 1)
@@ -433,28 +461,37 @@ async function onSlap($: EngineInterface, slap: Slap) {
   // Telling Claude and stopping its turn are off unless /slaps claude on.
   const isClaudeOn = (await $.store.get('claude')) === true
   const turnId = await read($, turn)
-  const isStopping = isClaudeOn && turnId !== null && slap.level >= settings.stopLevel
+  // A combo stops a turn only if none of its slaps barely registered (level
+  // 1), so steady shaking, a train or heavy typing, never does.
+  const isHard = slap.level >= settings.stopLevel
+  const isStopping = isClaudeOn && turnId !== null && level >= settings.stopLevel && (isHard || combo.weakest >= 2)
 
   setSensorStatus($, `spank: ${n} this session, last L${slap.level} (${slap.peak.toFixed(2)}g)`)
 
-  const level = Math.min(Math.max(slap.level, 1), 5)
   const { captions } = voiceOf()
   const line = captions[level - 1] ?? captions[0]
-  $.ui.toast(isStopping ? `Stopped Claude. L${level}` : `${line} L${level}`)
+  // One slap toast at a time, so a flurry does not stack them, unless the
+  // combo climbs past the level showing; a stop always says so.
+  if (isStopping || toast === undefined || now - toast.at >= TOAST_MS || level > toast.level) {
+    toast = { at: now, level }
+    $.ui.toast(isStopping ? `Stopped Claude. L${level}` : `${line} L${level}`, { timeoutMs: TOAST_MS })
+  }
   if ((await $.store.get('muted')) !== true) voice($, level)
-  await showFace($, { level, peak: slap.peak, line })
+  await showFace($, { level, peak: slap.peak, line, combo: combo.count })
 
   if (!isClaudeOn) return
+  if (burst.length === 0) burstSince = now
   burst.push(slap)
   if (turnId === null) return // told as the next turn starts
   if (isStopping) {
     await update($, turn, () => null)
     await $.turn.abort({ turnId }).catch(() => {})
-    await tellClaude($, 'stopped')
+    await tellClaude($, isHard ? 'stopped' : 'combo')
     return
   }
   cancelBurstTimer()
-  burstTimer = $.clock.after(BURST_MS, () => void tellClaude($, 'turn'))
+  const wait = Math.max(0, Math.min(BURST_MS, burstSince + BURST_MAX_MS - now))
+  burstTimer = $.clock.after(wait, () => void tellClaude($, 'turn'))
 }
 
 // slapd ships as Swift source and is built on first run (and again when its
@@ -519,8 +556,11 @@ async function listen($: EngineInterface) {
 export const register: Register = (on, options) => {
   settings = readSettings(options)
   burst = []
+  burstSince = 0
   cancelBurstTimer()
-  playing?.stop.abort()
+  combo = undefined
+  toast = undefined
+  playing?.abort()
   playing = undefined
   faceTimer?.cancel()
   faceTimer = undefined
@@ -582,7 +622,7 @@ export const register: Register = (on, options) => {
             <Box flexDirection="column">
               <Text bold>{shown.line}</Text>
               <Text dimColor>
-                level {shown.level} of 5, {shown.peak.toFixed(2)}g
+                level {shown.level} of 5, {shown.peak.toFixed(2)}g{shown.combo > 1 ? `, ${shown.combo} in a row` : ''}
               </Text>
             </Box>
           </Box>
@@ -593,6 +633,9 @@ export const register: Register = (on, options) => {
 
   on('turn.start', async ($, e, next) => {
     await update($, turn, () => e.turnId)
+    // A combo begun before the turn does not carry into it, so it cannot stop
+    // the turn on its first slap.
+    combo = undefined
     await tellClaude($, 'idle')
     return next(e)
   })
