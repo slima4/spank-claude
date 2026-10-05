@@ -466,6 +466,17 @@ describe('spank', () => {
     }
   })
 
+  test('settings: face series natsu shows her faces and plays her voice', { ...SLOW, options: { face_series: 'natsu' } }, async ($, on) => {
+    const { seen, feed } = await harness($, on)
+    const ui = await $.ui.mount(BAND)
+    await feed(slapLine(3, 0.3))
+    expect(seen.played).toEqual(['assets/voices/natsu/level_3.mp3'])
+    expect(seen.toasts).toEqual(['いてっ！ L3'])
+    expect((await ui.find({ key: 'face' }))?.props.cells).toBe(FACES.natsu[2]?.[2]?.cells)
+    expect(await ui.find({ text: 'いてっ！' })).toBeDefined()
+    await ui.unmount()
+  })
+
   test('settings: an unknown face series falls back to the default', { ...SLOW, options: { face_series: 'nobody' } }, async ($, on) => {
     const { seen, feed } = await harness($, on)
     const ui = await $.ui.mount(BAND)

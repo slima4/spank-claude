@@ -27,7 +27,7 @@
       "type": "string",
       "title": "Face series",
       "description": "Whose face pops up after a slap, and whose voice yelps.",
-      "options": ["sakura"],
+      "options": ["sakura", "natsu"],
       "default": "sakura"
     },
     "face_size": {
