@@ -20,17 +20,23 @@ message — and a hard enough slap stops it mid-turn.
   <img src="plugin/assets/faces/natsu/level_3.png" width="96" alt="Natsu, level 3">
   <img src="plugin/assets/faces/natsu/level_4.png" width="96" alt="Natsu, level 4">
   <img src="plugin/assets/faces/natsu/level_5.png" width="96" alt="Natsu, level 5">
+  <br>
+  <img src="plugin/assets/faces/aki/level_1.png" width="96" alt="Aki, level 1">
+  <img src="plugin/assets/faces/aki/level_2.png" width="96" alt="Aki, level 2">
+  <img src="plugin/assets/faces/aki/level_3.png" width="96" alt="Aki, level 3">
+  <img src="plugin/assets/faces/aki/level_4.png" width="96" alt="Aki, level 4">
+  <img src="plugin/assets/faces/aki/level_5.png" width="96" alt="Aki, level 5">
 </p>
 
 ## The pain scale
 
-| Level | Hit          | Sakura says | Natsu says  | What probably happened             |
-| ----- | ------------ | ----------- | ----------- | ---------------------------------- |
-| 1     | 0.05–0.1 g   | んっ！      | えっ！      | A tap. Passive-aggressive at most. |
-| 2     | 0.1–0.25 g   | あっ！      | うっ！      | The tests failed again.            |
-| 3     | 0.25–0.5 g   | いたっ！    | いてっ！    | Claude "simplified" your code.     |
-| 4     | 0.5–1 g      | きゃっ！    | やっ！      | Claude deleted the tests to make them pass. |
-| 5     | 1 g and up   | あぁっ…！   | うわぁっ！  | Production.                        |
+| Level | Hit          | Sakura says | Natsu says  | Aki says    | What probably happened             |
+| ----- | ------------ | ----------- | ----------- | ----------- | ---------------------------------- |
+| 1     | 0.05–0.1 g   | んっ！      | えっ！      | ひゃっ！    | A tap. Passive-aggressive at most. |
+| 2     | 0.1–0.25 g   | あっ！      | うっ！      | あれっ！    | The tests failed again.            |
+| 3     | 0.25–0.5 g   | いたっ！    | いてっ！    | いたぁ！    | Claude "simplified" your code.     |
+| 4     | 0.5–1 g      | きゃっ！    | やっ！      | いやっ！    | Claude deleted the tests to make them pass. |
+| 5     | 1 g and up   | あぁっ…！   | うわぁっ！  | きゃあっ！  | Production.                        |
 
 ## What you need
 
@@ -105,6 +111,7 @@ Switch with `/slaps who <series>` (`/slaps who` lists them), or under
 | -------- | -------- | ------------------------------------------------------------- |
 | `sakura` | `sakura` | <img src="plugin/assets/faces/sakura/level_1.png" width="48" alt="Sakura"> |
 | `natsu`  | `natsu`  | <img src="plugin/assets/faces/natsu/level_1.png" width="48" alt="Natsu">   |
+| `aki`    | `aki`    | <img src="plugin/assets/faces/aki/level_1.png" width="48" alt="Aki">       |
 
 ## Faces and terminals
 
@@ -124,7 +131,7 @@ Open `/config` in Claude Code (or `/plugin configure spank@spank-claude`):
 | ----------------------- | ------- | --------------------------------------------------------- |
 | Slap sensitivity (g)    | 0.05    | Smallest shake that counts. Typing counts? Raise it.      |
 | Level that stops Claude | 4       | With `/slaps claude on`, this level or harder stops a turn. |
-| Face series             | sakura  | `sakura` or `natsu`: whose face pops up and voice yelps.  |
+| Face series             | sakura  | `sakura`, `natsu` or `aki`: whose face pops up and voice yelps. |
 | Face size               | large   | `large`, `medium`, `small`, or `off`.                     |
 | Voice volume            | 1       | 0 is silent, up to 4 for open-plan offices.               |
 

@@ -7,6 +7,7 @@ export type Voice = { captions: readonly [string, string, string, string, string
 export const VOICES = {
   sakura: { captions: ['んっ！', 'あっ！', 'いたっ！', 'きゃっ！', 'あぁっ…！'] },
   natsu: { captions: ['えっ！', 'うっ！', 'いてっ！', 'やっ！', 'うわぁっ！'] },
+  aki: { captions: ['ひゃっ！', 'あれっ！', 'いたぁ！', 'いやっ！', 'きゃあっ！'] },
 } as const satisfies Record<string, Voice>
 
 export type VoiceId = keyof typeof VOICES
@@ -20,6 +21,7 @@ export type Series = { voice: VoiceId }
 export const SERIES: Record<SeriesId, Series> = {
   sakura: { voice: 'sakura' },
   natsu: { voice: 'natsu' },
+  aki: { voice: 'aki' },
 }
 
 export const DEFAULT_SERIES: SeriesId = 'sakura'

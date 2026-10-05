@@ -1,6 +1,6 @@
 {
   "name": "spank",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Slap your MacBook and Claude Code feels it: a face, a yelp, and optionally a stopped turn",
   "author": { "name": "Slim", "url": "https://github.com/slima4" },
   "repository": "https://github.com/slima4/spank-claude",
@@ -27,7 +27,7 @@
       "type": "string",
       "title": "Face series",
       "description": "Whose face pops up after a slap, and whose voice yelps.",
-      "options": ["sakura", "natsu"],
+      "options": ["sakura", "natsu", "aki"],
       "default": "sakura"
     },
     "face_size": {

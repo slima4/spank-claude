@@ -484,6 +484,17 @@ describe('spank', () => {
     await ui.unmount()
   })
 
+  test('settings: face series aki shows her faces and plays her voice', { ...SLOW, options: { face_series: 'aki' } }, async ($, on) => {
+    const { seen, feed } = await harness($, on)
+    const ui = await $.ui.mount(BAND)
+    await feed(slapLine(3, 0.3))
+    expect(seen.played).toEqual(['assets/voices/aki/level_3.mp3'])
+    expect(seen.toasts).toEqual(['いたぁ！ L3'])
+    expect((await ui.find({ key: 'face' }))?.props.cells).toBe(FACES.aki[2]?.[2]?.cells)
+    expect(await ui.find({ text: 'いたぁ！' })).toBeDefined()
+    await ui.unmount()
+  })
+
   test('settings: an unknown face series falls back to the default', { ...SLOW, options: { face_series: 'nobody' } }, async ($, on) => {
     const { seen, feed } = await harness($, on)
     const ui = await $.ui.mount(BAND)
@@ -501,7 +512,7 @@ describe('spank', () => {
 
   test('/slaps who lists the face series and marks the current one', SLOW, async ($, on) => {
     const { slaps } = await harness($, on)
-    expect((await slaps('who')).text).toBe('sakura (current), natsu')
+    expect((await slaps('who')).text).toBe('sakura (current), natsu, aki')
   })
 
   test('/slaps who natsu switches the face series', SLOW, async ($, on) => {
@@ -511,7 +522,7 @@ describe('spank', () => {
     expect(seen.configured).toEqual([{ key: 'spank.face_series', value: 'natsu' }])
 
     // Switched already, before the reload that saving brings.
-    expect((await slaps('who')).text).toBe('sakura, natsu (current)')
+    expect((await slaps('who')).text).toBe('sakura, natsu (current), aki')
     expect((await slaps('who natsu')).text).toBe('Natsu already. Slap away.')
     await feed(slapLine(3, 0.3))
     expect(seen.played).toEqual(['assets/voices/natsu/level_3.mp3'])
@@ -528,7 +539,7 @@ describe('spank', () => {
 
   test('/slaps who turns away an unknown name and the current one', SLOW, async ($, on) => {
     const { clock, seen, slaps } = await harness($, on)
-    expect((await slaps('who hana')).text).toBe('No face series "hana". Try: sakura, natsu.')
+    expect((await slaps('who hana')).text).toBe('No face series "hana". Try: sakura, natsu, aki.')
     expect((await slaps('who sakura')).text).toBe('Sakura already. Slap away.')
     await clock.settle()
     expect(seen.configured).toEqual([])
@@ -540,7 +551,7 @@ describe('spank', () => {
     await clock.settle()
     expect(seen.configured).toEqual([])
     expect(seen.toasts.at(-1)).toBe('Could not switch to Natsu: no face series row in /config. Set "Face series" in /config.')
-    expect((await slaps('who')).text).toBe('sakura (current), natsu')
+    expect((await slaps('who')).text).toBe('sakura (current), natsu, aki')
   })
 
   test('only the session used last reacts to a slap', SLOW, async ($, on) => {
