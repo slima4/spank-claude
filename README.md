@@ -22,9 +22,6 @@ message — and a hard enough slap stops it mid-turn.
   <img src="plugin/assets/faces/natsu/level_5.png" width="96" alt="Natsu, level 5">
 </p>
 
-Inspired by the [Spank Phone](https://apps.apple.com/us/app/spank-phone-slap-your-phone/id6761312196)
-iOS app, minus the phone, plus an AI that can take a hint.
-
 ## The pain scale
 
 | Level | Hit          | Sakura says | Natsu says  | What probably happened             |
@@ -192,4 +189,3 @@ To add a face series, say `hana`:
 - The sensor reading comes from the community's reverse-engineering work in
   [olvvier/apple-silicon-accelerometer](https://github.com/olvvier/apple-silicon-accelerometer)
   and [taigrr/apple-silicon-accelerometer](https://github.com/taigrr/apple-silicon-accelerometer).
-  Not affiliated with Apple, Anthropic, or the Spank Phone app.
