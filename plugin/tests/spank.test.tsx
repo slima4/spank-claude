@@ -2,6 +2,9 @@ import type { On, PromptEditInput } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
+import { FACES } from '../hooks/faces'
+import { SERIES, VOICES } from '../hooks/series'
+
 // The band above the prompt, roomy enough for the largest face.
 const BAND = {
   plugin: 'spank',
@@ -10,8 +13,8 @@ const BAND = {
   props: { hasSurvey: false, isWorking: false, maxRows: 30, bodyColumns: 120, scroll: { offset: 0, bodyRows: 30 }, view: {} },
 }
 
-const CLIP_2 = 'assets/voices/level_2.mp3'
-const CLIP_4 = 'assets/voices/level_4.mp3'
+const CLIP_2 = 'assets/voices/sakura/level_2.mp3'
+const CLIP_4 = 'assets/voices/sakura/level_4.mp3'
 
 function queue() {
   return { lines: [] as string[], wake: () => {} }
@@ -234,7 +237,7 @@ describe('spank', () => {
     await feed(slapLine(3, 0.31))
     await clock.advance(1600)
 
-    expect(seen.played).toEqual(['assets/voices/level_2.mp3', 'assets/voices/level_3.mp3'])
+    expect(seen.played).toEqual(['assets/voices/sakura/level_2.mp3', 'assets/voices/sakura/level_3.mp3'])
     expect(seen.aborted).toEqual([])
     expect(seen.statuses.at(-1)).toBe('spank: 2 this session, last L3 (0.31g)')
   })
@@ -246,7 +249,7 @@ describe('spank', () => {
     await feed(slapLine(5, 1.7))
 
     expect(seen.aborted).toEqual(['turn-1'])
-    expect(seen.played).toEqual(['assets/voices/level_5.mp3'])
+    expect(seen.played).toEqual(['assets/voices/sakura/level_5.mp3'])
     expect(seen.toasts).toEqual(['Stopped Claude. L5'])
     expect(seen.notes).toHaveLength(1)
     expect(seen.notes[0]).toContain('The user just physically slapped their laptop (')
@@ -260,7 +263,7 @@ describe('spank', () => {
     await clock.advance(1500)
 
     expect(seen.aborted).toEqual([])
-    expect(seen.played).toEqual(['assets/voices/level_5.mp3'])
+    expect(seen.played).toEqual(['assets/voices/sakura/level_5.mp3'])
   })
 
   test('slaps during a turn reach Claude as one note once they stop', SLOW, async ($, on) => {
@@ -319,7 +322,7 @@ describe('spank', () => {
     expect(seen.aborted).toEqual([])
     expect(seen.notes).toEqual([])
     expect(seen.toasts).toEqual(['あぁっ…！ L5'])
-    expect(seen.played).toEqual(['assets/voices/level_5.mp3'])
+    expect(seen.played).toEqual(['assets/voices/sakura/level_5.mp3'])
   })
 
   test('/slaps claude on and off switch the Claude actions', SLOW, async ($, on) => {
@@ -453,6 +456,30 @@ describe('spank', () => {
       await ui.unmount()
     })
   }
+
+  // `make faces` refuses a series the face_series setting does not offer.
+  test('every face series has five levels of faces and a voice', () => {
+    expect(Object.keys(SERIES).sort()).toEqual(Object.keys(FACES).sort())
+    for (const [id, levels] of Object.entries(FACES)) {
+      expect(levels).toHaveLength(5)
+      expect(VOICES[SERIES[id as keyof typeof SERIES].voice]?.captions).toHaveLength(5)
+    }
+  })
+
+  test('settings: an unknown face series falls back to the default', { ...SLOW, options: { face_series: 'nobody' } }, async ($, on) => {
+    const { seen, feed } = await harness($, on)
+    const ui = await $.ui.mount(BAND)
+    await feed(slapLine(3, 0.3))
+    expect(seen.played).toEqual(['assets/voices/sakura/level_3.mp3'])
+    expect(seen.toasts).toEqual(['いたっ！ L3'])
+    expect((await ui.find({ key: 'face' }))?.type).toBe('Raster')
+    await ui.unmount()
+  })
+
+  test('/slaps image with no picture for the series says so', SLOW, async ($, on) => {
+    const { slaps } = await harness($, on)
+    expect((await slaps('image')).text).toMatch(/^Image probe: no picture to try \(.*\/assets\/faces\/sakura\/level_1\.png is missing\)\.$/)
+  })
 
   test('only the session used last reacts to a slap', SLOW, async ($, on) => {
     const { seen, feed, slaps, setActive, active } = await harness($, on)
@@ -708,6 +735,6 @@ describe('spank', () => {
 
     expect((await slaps('unmute')).text).toBe('Laptop voice on.')
     await feed(slapLine(3, 0.4))
-    expect(seen.played).toEqual(['assets/voices/level_3.mp3'])
+    expect(seen.played).toEqual(['assets/voices/sakura/level_3.mp3'])
   })
 })

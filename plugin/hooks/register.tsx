@@ -3,6 +3,8 @@ import type { EngineInterface, PluginOptions, Register, Timer } from 'claude-cod
 
 import type { FaceShown, Slap } from '../types'
 import { FACES } from './faces'
+import type { SeriesId } from './faces'
+import { DEFAULT_SERIES, SERIES, VOICES, isSeries } from './series'
 
 const count = atom({ plugin: 'spank', key: 'count' } as const, 0)
 const last = atom({ plugin: 'spank', key: 'last' } as const, null)
@@ -33,10 +35,6 @@ const CALIBRATE_FLOOR = 0.025
 const CALIBRATE_SLACK_MS = 5000
 // How long /slaps image shows its test picture.
 const PROBE_MS = 10000
-
-// What each level's clip (assets/voices/level_<n>.mp3) says, shown beside
-// her face and in the toast.
-const CAPTIONS = ['んっ！', 'あっ！', 'いたっ！', 'きゃっ！', 'あぁっ…！'] as const
 
 // slapd's lines: it opened the sensor, heard a slap, or (with --raw, every
 // 0.1s) the loudest shake of that moment.
@@ -103,8 +101,8 @@ let bandRequestId: string | undefined
 
 // The config menu's values (the manifest's userConfig). A change there reloads
 // the module, so register reads them afresh.
-type Settings = { threshold: number; stopLevel: number; faceRows: number; volume: number }
-let settings: Settings = { threshold: 0.05, stopLevel: 4, faceRows: 16, volume: 1 }
+type Settings = { threshold: number; stopLevel: number; faceRows: number; volume: number; series: SeriesId }
+let settings: Settings = { threshold: 0.05, stopLevel: 4, faceRows: 16, volume: 1, series: DEFAULT_SERIES }
 
 function readSettings(options: PluginOptions): Settings {
   const number = (key: string, fallback: number) => {
@@ -117,7 +115,14 @@ function readSettings(options: PluginOptions): Settings {
     stopLevel: number('stop_level', 4),
     faceRows: typeof faceSize === 'string' ? (FACE_ROWS[faceSize] ?? 16) : 16,
     volume: number('volume', 1),
+    series: isSeries(options.face_series) ? options.face_series : DEFAULT_SERIES,
   }
+}
+
+// The chosen series' voice: its clips' folder and what each level says.
+function voiceOf() {
+  const id = SERIES[settings.series].voice
+  return { id, captions: VOICES[id].captions }
 }
 
 function setSensorStatus($: EngineInterface, text: string) {
@@ -148,9 +153,10 @@ async function isActive($: EngineInterface) {
   }
 }
 
-// The largest face for this level that fits the band, if any does.
+// The largest face of the chosen series for this level that fits the band,
+// if any does.
 function faceArt(level: number, maxRows: number, columns: number) {
-  const arts = FACES[Math.min(Math.max(level, 1), 5) - 1] ?? []
+  const arts = FACES[settings.series][Math.min(Math.max(level, 1), 5) - 1] ?? []
   return arts.findLast(art => art.rows <= Math.min(maxRows, settings.faceRows) && art.columns + FACE_TEXT_COLUMNS <= columns)
 }
 
@@ -168,8 +174,9 @@ function voice($: EngineInterface, level: number) {
   playing?.stop.abort()
   const clip = { level, stop: new AbortController() }
   playing = clip
+  const asset = `assets/voices/${voiceOf().id}/level_${level}.mp3`
   $.audio
-    .play({ asset: `assets/voices/level_${level}.mp3` }, { signal: clip.stop.signal, gain: settings.volume })
+    .play({ asset }, { signal: clip.stop.signal, gain: settings.volume })
     .catch(() => {})
     .finally(() => {
       if (playing === clip) playing = undefined
@@ -395,7 +402,8 @@ async function onSlap($: EngineInterface, slap: Slap) {
   setSensorStatus($, `spank: ${n} this session, last L${slap.level} (${slap.peak.toFixed(2)}g)`)
 
   const level = Math.min(Math.max(slap.level, 1), 5)
-  const line = CAPTIONS[level - 1] ?? CAPTIONS[0]
+  const { captions } = voiceOf()
+  const line = captions[level - 1] ?? captions[0]
   $.ui.toast(isStopping ? `Stopped Claude. L${level}` : `${line} L${level}`)
   if ((await $.store.get('muted')) !== true) voice($, level)
   await showFace($, { level, peak: slap.peak, line })
@@ -582,7 +590,10 @@ export const register: Register = (on, options) => {
     if (arg === 'image') {
       // Draws a real picture above the prompt, then asks the terminal to take
       // it again: a refusal says the terminal drew the alt text instead.
-      const { base64 } = await $.fs.read(`${$.plugin.root}/assets/faces/level_1.png`, { as: 'bytes' })
+      const picture = `${$.plugin.root}/assets/faces/${settings.series}/level_1.png`
+      const bytes = await $.fs.read(picture, { as: 'bytes' }).catch(() => undefined)
+      if (bytes === undefined) return { text: `Image probe: no picture to try (${picture} is missing).` }
+      const { base64 } = bytes
       probePng = base64
       await update($, probe, () => true)
       await $.clock.sleep(1000)

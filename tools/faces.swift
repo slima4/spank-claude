@@ -1,5 +1,10 @@
-// Turns assets/faces/level_<1-5>.png into terminal Raster cells for the spank
-// plugin: plugin/hooks/faces.ts.
+// Turns each face series, assets/faces/<series>/level_<1-5>.png, into terminal
+// Raster cells for the spank plugin: plugin/hooks/faces.ts. Also writes each
+// face at 256px to plugin/assets/faces/<series>/, the picture /slaps image
+// draws, when that copy is missing; delete one to redraw it. (A clone's file
+// times say nothing about which is newer, so they are not compared.) Stops
+// before writing anything if the manifest's face_series setting does not
+// offer every series.
 //
 // Each cell is a half block (two pixels stacked), so a face of R rows is 2R
 // columns wide and looks square. The white sticker background is cut away by
@@ -19,6 +24,8 @@ import UniformTypeIdentifiers
 let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
 let input = root.appendingPathComponent("assets/faces")
 let output = root.appendingPathComponent("plugin/hooks/faces.ts")
+let pictures = root.appendingPathComponent("plugin/assets/faces")
+let pictureSide = 256
 let sizes = [8, 12, 16, 20] // rows; columns are twice that
 // The crop keeps this much of the content's square, centered a little low:
 // the expression (eyes, mouth) over the hair and the stickers' decorations.
@@ -174,6 +181,24 @@ func base64(_ words: [UInt32]) -> String {
     return Data(bytes).base64EncodedString()
 }
 
+// The face scaled to fill side x side, cut to the middle if it is not square,
+// as the plugin's picture of it.
+func writePicture(from source: URL, to url: URL, side: Int) {
+    guard let input = CGImageSourceCreateWithURL(source as CFURL, nil),
+          let image = CGImageSourceCreateImageAtIndex(input, 0, nil)
+    else { fatalError("cannot read \(source.path)") }
+    let context = CGContext(
+        data: nil, width: side, height: side, bitsPerComponent: 8, bytesPerRow: side * 4,
+        space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    context.interpolationQuality = .high
+    let scale = Double(side) / Double(min(image.width, image.height))
+    let width = Double(image.width) * scale, height = Double(image.height) * scale
+    context.draw(image, in: CGRect(x: (Double(side) - width) / 2, y: (Double(side) - height) / 2, width: width, height: height))
+    let destination = CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil)!
+    CGImageDestinationAddImage(destination, context.makeImage()!, nil)
+    CGImageDestinationFinalize(destination)
+}
+
 func writePreview(_ pixels: [UInt32?], size: Int, to url: URL) {
     let scale = 8
     let side = size * scale
@@ -193,32 +218,70 @@ func writePreview(_ pixels: [UInt32?], size: Int, to url: URL) {
     CGImageDestinationFinalize(destination)
 }
 
-var levels: [String] = []
-for level in 1...5 {
-    let bitmap = Bitmap(png: input.appendingPathComponent("level_\(level).png"))
-    let mask = backgroundMask(bitmap)
-    let crop = squareCrop(mask, width: bitmap.width, height: bitmap.height)
-    var arts: [String] = []
-    for rows in sizes {
-        let pixels = enhance(downsample(bitmap, mask, crop: crop, size: rows * 2), size: rows * 2)
-        arts.append("    { columns: \(rows * 2), rows: \(rows), cells: '\(base64(cells(pixels, size: rows * 2)))' },")
-        if let dir = previewDir {
-            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            writePreview(pixels, size: rows * 2, to: dir.appendingPathComponent("level_\(level)_\(rows).png"))
+// One folder per series, named for it; each holds level_1.png to level_5.png.
+let fm = FileManager.default
+let series = try fm.contentsOfDirectory(
+    at: input, includingPropertiesForKeys: [.isDirectoryKey], options: .skipsHiddenFiles)
+    .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true }
+    .map { $0.lastPathComponent }
+    .sorted()
+guard !series.isEmpty else { fatalError("no face series in \(input.path)") }
+for name in series where name.range(of: "^[a-z][a-z0-9_]*$", options: .regularExpression) == nil {
+    fatalError("series folder \(name): use lowercase letters, digits and _")
+}
+
+// The face_series setting in the manifest must offer every series.
+let manifest = root.appendingPathComponent("plugin/.claude-plugin/plugin.json")
+let options = (try? JSONSerialization.jsonObject(with: Data(contentsOf: manifest)) as? [String: Any])
+    .flatMap { $0["userConfig"] as? [String: Any] }
+    .flatMap { $0["face_series"] as? [String: Any] }
+    .flatMap { $0["options"] as? [String] } ?? []
+let unoffered = series.filter { !options.contains($0) }
+guard unoffered.isEmpty else {
+    fatalError("add \(unoffered.map { "\"\($0)\"" }.joined(separator: ", ")) to face_series options in \(manifest.path)")
+}
+
+var entries: [String] = []
+for name in series {
+    var levels: [String] = []
+    for level in 1...5 {
+        let source = input.appendingPathComponent("\(name)/level_\(level).png")
+        guard fm.fileExists(atPath: source.path) else { fatalError("missing \(source.path)") }
+        let bitmap = Bitmap(png: source)
+        let mask = backgroundMask(bitmap)
+        let crop = squareCrop(mask, width: bitmap.width, height: bitmap.height)
+        var arts: [String] = []
+        for rows in sizes {
+            let pixels = enhance(downsample(bitmap, mask, crop: crop, size: rows * 2), size: rows * 2)
+            arts.append("      { columns: \(rows * 2), rows: \(rows), cells: '\(base64(cells(pixels, size: rows * 2)))' },")
+            if let dir = previewDir?.appendingPathComponent(name) {
+                try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+                writePreview(pixels, size: rows * 2, to: dir.appendingPathComponent("level_\(level)_\(rows).png"))
+            }
         }
+        levels.append("    [\n" + arts.joined(separator: "\n") + "\n    ],")
+
+        let picture = pictures.appendingPathComponent("\(name)/level_\(level).png")
+        if fm.fileExists(atPath: picture.path) { continue }
+        try fm.createDirectory(at: picture.deletingLastPathComponent(), withIntermediateDirectories: true)
+        writePicture(from: source, to: picture, side: pictureSide)
+        print("wrote \(picture.path)")
     }
-    levels.append("  [\n" + arts.joined(separator: "\n") + "\n  ],")
+    entries.append("  \(name): [\n" + levels.joined(separator: "\n") + "\n  ],")
 }
 
 let ts = """
-// Generated by tools/faces.swift from assets/faces/level_<1-5>.png; do not edit.
+// Generated by tools/faces.swift from assets/faces/<series>/level_<1-5>.png; do not edit.
 
 export type FaceArt = { columns: number; rows: number; cells: string }
 
-// Raster cells by slap level 1-5, then by size, smallest first.
-export const FACES: readonly (readonly FaceArt[])[] = [
-\(levels.joined(separator: "\n"))
-]
+// The face series, one per folder in assets/faces.
+export type SeriesId = \(series.map { "'\($0)'" }.joined(separator: " | "))
+
+// Raster cells by series, then by slap level 1-5, then by size, smallest first.
+export const FACES: Record<SeriesId, readonly (readonly FaceArt[])[]> = {
+\(entries.joined(separator: "\n"))
+}
 
 """
 try ts.write(to: output, atomically: true, encoding: .utf8)

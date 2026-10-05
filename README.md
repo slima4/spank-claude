@@ -9,11 +9,11 @@ keeps score of how your day is going. Optionally, Claude itself gets the
 message — and a hard enough slap stops it mid-turn.
 
 <p>
-  <img src="plugin/assets/faces/level_1.png" width="96" alt="level 1">
-  <img src="plugin/assets/faces/level_2.png" width="96" alt="level 2">
-  <img src="plugin/assets/faces/level_3.png" width="96" alt="level 3">
-  <img src="plugin/assets/faces/level_4.png" width="96" alt="level 4">
-  <img src="plugin/assets/faces/level_5.png" width="96" alt="level 5">
+  <img src="plugin/assets/faces/sakura/level_1.png" width="96" alt="level 1">
+  <img src="plugin/assets/faces/sakura/level_2.png" width="96" alt="level 2">
+  <img src="plugin/assets/faces/sakura/level_3.png" width="96" alt="level 3">
+  <img src="plugin/assets/faces/sakura/level_4.png" width="96" alt="level 4">
+  <img src="plugin/assets/faces/sakura/level_5.png" width="96" alt="level 5">
 </p>
 
 Inspired by the [Spank Phone](https://apps.apple.com/us/app/spank-phone-slap-your-phone/id6761312196)
@@ -21,7 +21,7 @@ iOS app, minus the phone, plus an AI that can take a hint.
 
 ## The pain scale
 
-| Level | Hit          | She says    | What probably happened             |
+| Level | Hit          | Sakura says | What probably happened             |
 | ----- | ------------ | ----------- | ---------------------------------- |
 | 1     | 0.05–0.1 g   | んっ！      | A tap. Passive-aggressive at most. |
 | 2     | 0.1–0.25 g   | あっ！      | The tests failed again.            |
@@ -90,6 +90,15 @@ background; the slap stops Claude, not the command.
 Only the Claude Code session you used last reacts to a slap (the one you
 last typed a prompt or a `/slaps` command in). One laptop, one victim.
 
+## Face series
+
+Each face series is one character: five faces, one per level, and a voice.
+Pick one under "Face series" in `/config`.
+
+| Series   | Voice    |
+| -------- | -------- |
+| `sakura` | `sakura` |
+
 ## Faces and terminals
 
 Faces are drawn as colored half-block characters, so they show up in any
@@ -108,6 +117,7 @@ Open `/config` in Claude Code (or `/plugin configure spank@spank-claude`):
 | ----------------------- | ------- | --------------------------------------------------------- |
 | Slap sensitivity (g)    | 0.05    | Smallest shake that counts. Typing counts? Raise it.      |
 | Level that stops Claude | 4       | With `/slaps claude on`, this level or harder stops a turn. |
+| Face series             | sakura  | Whose face pops up, and whose voice yelps.                |
 | Face size               | large   | `large`, `medium`, `small`, or `off`.                     |
 | Voice volume            | 1       | 0 is silent, up to 4 for open-plan offices.               |
 
@@ -145,7 +155,7 @@ claude --plugin-dir "$PWD/plugin"
 
 make slapd                         # build the sensor reader by hand
 make raw                           # watch the live shake
-make faces                         # rebuild face cells from assets/faces/*.png
+make faces                         # rebuild face cells from assets/faces/<series>/*.png
 claude plugin validate .           # the marketplace and the plugin
 claude plugin test plugin          # the tests
 ```
@@ -153,9 +163,15 @@ claude plugin test plugin          # the tests
 Installed copies are kept per version, so bump `version` in
 `plugin/.claude-plugin/plugin.json` when you ship a change.
 
-Swap in your own faces (`assets/faces/level_<1-5>.png`) and voices
-(`plugin/assets/voices/level_<1-5>.mp3`), then update the captions in
-`plugin/hooks/register.tsx`.
+To add a face series, say `hana`:
+
+1. Put its faces in `assets/faces/hana/level_<1-5>.png` (square, on white).
+2. Add `"hana"` to the `face_series` options in `plugin/.claude-plugin/plugin.json`.
+3. Run `make faces`. It draws the cells into `plugin/hooks/faces.ts`, writes the
+   256px pictures to `plugin/assets/faces/hana/`, and warns if step 2 is missing.
+4. In `plugin/hooks/series.ts`, add `hana` to `SERIES`. It can borrow an
+   existing voice (`voice: 'sakura'`), or get its own: clips in
+   `plugin/assets/voices/hana/level_<1-5>.mp3` and their captions in `VOICES`.
 
 ## License
 

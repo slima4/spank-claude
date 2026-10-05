@@ -10,10 +10,9 @@ slapd: $(SLAPD)
 raw: $(SLAPD)
 	$(SLAPD) --raw
 
-# Terminal cells for the faces drawn above the prompt.
-faces: plugin/hooks/faces.ts
-
-plugin/hooks/faces.ts: tools/faces.swift $(wildcard assets/faces/level_*.png)
+# Terminal cells for each face series drawn above the prompt, and any of its
+# pictures missing. Always runs: the pictures are not tracked here.
+faces:
 	swift tools/faces.swift
 
 .PHONY: slapd raw faces
