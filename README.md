@@ -164,7 +164,7 @@ Open `/config` in Claude Code (or `/plugin configure spank@spank-claude`):
 | Slap sensitivity (g)    | 0.05    | Smallest shake that counts, and where level 1 starts. Typing counts? Raise it. |
 | Level that stops Claude | 4       | With `/slaps claude on`, this level or harder stops a turn. |
 | Face series             | sakura  | `sakura`, `natsu` or `aki`: whose face pops up and voice yelps. |
-| Face size               | large   | `large`, `medium`, `small`, or `off`.                     |
+| Face size               | large   | `large` (24 rows), `medium` (16), `small` (12), or `off`. |
 | Voice volume            | 1       | 0 is silent, up to 4 for open-plan offices.               |
 
 Changes apply right away. Not sure what sensitivity to pick? Run

@@ -31,7 +31,7 @@ const TOAST_MS = 4000
 // How long a clip plays before a slap no harder than it may cut it off.
 const VOICE_MS = 400
 // The tallest face per face_size setting, in rows; 0 draws none.
-const FACE_ROWS: Record<string, number> = { large: 16, medium: 12, small: 8, off: 0 }
+const FACE_ROWS: Record<string, number> = { large: 24, medium: 16, small: 12, off: 0 }
 // Room the face leaves beside it for its line.
 const FACE_TEXT_COLUMNS = 24
 // /slaps calibrate: how long each step listens (from the first key, and from
@@ -144,7 +144,7 @@ let settings: Settings = {
   threshold: 0.05,
   levels: levelStarts(0.05),
   stopLevel: 4,
-  faceRows: 16,
+  faceRows: 24,
   volume: 1,
   series: DEFAULT_SERIES,
 }
@@ -161,7 +161,7 @@ function readSettings(options: PluginOptions): Settings {
     threshold,
     levels: levelStarts(threshold),
     stopLevel: number('stop_level', 4),
-    faceRows: typeof faceSize === 'string' ? (FACE_ROWS[faceSize] ?? 16) : 16,
+    faceRows: typeof faceSize === 'string' ? (FACE_ROWS[faceSize] ?? 24) : 24,
     volume: number('volume', 1),
     series: isSeries(options.face_series) ? options.face_series : DEFAULT_SERIES,
   }

@@ -26,7 +26,7 @@ let input = root.appendingPathComponent("assets/faces")
 let output = root.appendingPathComponent("plugin/hooks/faces.ts")
 let pictures = root.appendingPathComponent("plugin/assets/faces")
 let pictureSide = 256
-let sizes = [8, 12, 16, 20] // rows; columns are twice that
+let sizes = [8, 12, 16, 20, 24] // rows; columns are twice that
 // The crop keeps this much of the content's square, centered a little low:
 // the expression (eyes, mouth) over the hair and the stickers' decorations.
 let cropKeep = 0.84

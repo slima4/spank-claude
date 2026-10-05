@@ -382,7 +382,7 @@ describe('spank', () => {
     await feed(slapLine(1.63))
     const drawn = await ui.find({ key: 'face' })
     expect(drawn?.type).toBe('Raster')
-    expect(drawn?.props.rows).toBe(16)
+    expect(drawn?.props.rows).toBe(24)
     expect(await ui.find({ text: 'あぁっ…！' })).toBeDefined()
     expect(await ui.find({ text: /level 5 of 5, 1\.63g/ })).toBeDefined()
 
@@ -704,11 +704,11 @@ describe('spank', () => {
     const { feed } = await harness($, on)
     const ui = await $.ui.mount(BAND)
     await feed(slapLine(0.3))
-    expect((await ui.find({ key: 'face' }))?.props.rows).toBe(16)
+    expect((await ui.find({ key: 'face' }))?.props.rows).toBe(24)
     await ui.unmount()
   })
 
-  for (const [size, rows] of [['small', 8], ['medium', 12], ['off', undefined]] as const) {
+  for (const [size, rows] of [['small', 12], ['medium', 16], ['off', undefined]] as const) {
     test(`settings: face size ${size}`, { ...SLOW, options: { face_size: size } }, async ($, on) => {
       const { feed } = await harness($, on)
       const ui = await $.ui.mount(BAND)
@@ -733,7 +733,7 @@ describe('spank', () => {
     await feed(slapLine(0.3))
     expect(seen.played).toEqual(['assets/voices/natsu/level_3.mp3'])
     expect(seen.toasts).toEqual(['いてっ！ L3'])
-    expect((await ui.find({ key: 'face' }))?.props.cells).toBe(FACES.natsu[2]?.[2]?.cells)
+    expect((await ui.find({ key: 'face' }))?.props.cells).toBe(FACES.natsu[2]?.at(-1)?.cells)
     expect(await ui.find({ text: 'いてっ！' })).toBeDefined()
     await ui.unmount()
   })
@@ -744,7 +744,7 @@ describe('spank', () => {
     await feed(slapLine(0.3))
     expect(seen.played).toEqual(['assets/voices/aki/level_3.mp3'])
     expect(seen.toasts).toEqual(['いたぁ！ L3'])
-    expect((await ui.find({ key: 'face' }))?.props.cells).toBe(FACES.aki[2]?.[2]?.cells)
+    expect((await ui.find({ key: 'face' }))?.props.cells).toBe(FACES.aki[2]?.at(-1)?.cells)
     expect(await ui.find({ text: 'いたぁ！' })).toBeDefined()
     await ui.unmount()
   })
