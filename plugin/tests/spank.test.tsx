@@ -31,8 +31,10 @@ function raw(peak: number) {
 // combos.
 const T0 = 1791041867213
 
-function slapLine(level: number, peak: number, ts = T0) {
-  return JSON.stringify({ type: 'slap', ts, peak, level })
+// A slap slapd heard. At the default sensitivity (0.05g) the plugin makes
+// 0.07g level 1, 0.2g level 2, 0.3g level 3, 0.6g level 4, 1g and up level 5.
+function slapLine(peak: number, ts = T0) {
+  return JSON.stringify({ type: 'slap', ts, peak })
 }
 
 // The engine beneath the plugin: slapd's stdout fed line by line, and a
@@ -243,7 +245,7 @@ describe('spank', () => {
 
     await feed('{"type":"start","ts":1}')
     await feed('not json')
-    await feed(slapLine(3, 0.4231))
+    await feed(slapLine(0.4231))
 
     expect(seen.statuses).toContain('spank: armed (0.05g)')
     expect(seen.statuses).toContain('spank: 1 this session, last L3 (0.42g)')
@@ -254,9 +256,9 @@ describe('spank', () => {
   test('each slap plays its level\'s clip, and the sensor keeps listening', SLOW, async ($, on) => {
     const { clock, seen, feed } = await harness($, on)
 
-    await feed(slapLine(2, 0.2))
+    await feed(slapLine(0.2))
     await clock.advance(1600)
-    await feed(slapLine(3, 0.31))
+    await feed(slapLine(0.31))
     await clock.advance(1600)
 
     expect(seen.played).toEqual(['assets/voices/sakura/level_2.mp3', 'assets/voices/sakura/level_3.mp3'])
@@ -268,7 +270,7 @@ describe('spank', () => {
     const { seen, feed, turnStart } = await harness($, on)
 
     await turnStart('turn-1')
-    await feed(slapLine(5, 1.7))
+    await feed(slapLine(1.7))
 
     expect(seen.aborted).toEqual(['turn-1'])
     expect(seen.played).toEqual(['assets/voices/sakura/level_5.mp3'])
@@ -281,7 +283,7 @@ describe('spank', () => {
   test('a hard slap with no turn running stops nothing', SLOW, async ($, on) => {
     const { clock, seen, feed } = await harness($, on)
 
-    await feed(slapLine(5, 1.7))
+    await feed(slapLine(1.7))
     await clock.advance(1500)
 
     expect(seen.aborted).toEqual([])
@@ -292,9 +294,9 @@ describe('spank', () => {
     const { clock, seen, feed, turnStart } = await harness($, on)
 
     await turnStart('turn-1')
-    await feed(slapLine(2, 0.2))
+    await feed(slapLine(0.2))
     await clock.advance(1000)
-    await feed(slapLine(3, 0.31))
+    await feed(slapLine(0.31))
     await clock.advance(1000)
     expect(seen.notes).toEqual([])
 
@@ -307,7 +309,7 @@ describe('spank', () => {
   test('slaps between turns reach Claude as one note when the next turn starts', SLOW, async ($, on) => {
     const { clock, seen, feed, turnStart } = await harness($, on)
 
-    await feed(slapLine(1, 0.07), slapLine(3, 0.34), slapLine(1, 0.12))
+    await feed(slapLine(0.07), slapLine(0.34), slapLine(0.09))
     await clock.advance(5000)
     expect(seen.notes).toEqual([])
 
@@ -324,7 +326,7 @@ describe('spank', () => {
     const { clock, seen, feed, turnStart, turnComplete } = await harness($, on)
 
     await turnStart('turn-1')
-    await feed(slapLine(2, 0.2))
+    await feed(slapLine(0.2))
     await turnComplete('turn-1')
     await clock.advance(5000)
     expect(seen.notes).toEqual([])
@@ -338,7 +340,7 @@ describe('spank', () => {
     const { seen, feed, turnStart } = await harness($, on, {})
 
     await turnStart('turn-1')
-    await feed(slapLine(5, 1.7))
+    await feed(slapLine(1.7))
     await turnStart('turn-2')
 
     expect(seen.aborted).toEqual([])
@@ -352,12 +354,12 @@ describe('spank', () => {
 
     expect((await slaps('claude on')).text).toBe('Slaps now reach Claude, and a hard one stops its turn.')
     await turnStart('turn-1')
-    await feed(slapLine(5, 1.7))
+    await feed(slapLine(1.7))
     expect(seen.aborted).toEqual(['turn-1'])
 
     expect((await slaps('claude off')).text).toBe('Slaps no longer reach Claude or stop its turn.')
     await turnStart('turn-2')
-    await feed(slapLine(5, 1.7))
+    await feed(slapLine(1.7))
     expect(seen.aborted).toEqual(['turn-1'])
     expect(seen.notes).toHaveLength(1)
   })
@@ -374,7 +376,7 @@ describe('spank', () => {
     const ui = await $.ui.mount(band)
     expect(await ui.find({ key: 'face' })).toBeUndefined()
 
-    await feed(slapLine(5, 1.63))
+    await feed(slapLine(1.63))
     const drawn = await ui.find({ key: 'face' })
     expect(drawn?.type).toBe('Raster')
     expect(drawn?.props.rows).toBe(16)
@@ -386,7 +388,7 @@ describe('spank', () => {
     await ui.unmount()
 
     const narrow = await $.ui.mount({ ...band, props: { ...band.props, maxRows: 9 } })
-    await feed(slapLine(2, 0.2))
+    await feed(slapLine(0.2))
     expect((await narrow.find({ key: 'face' }))?.props.rows).toBe(8)
     await narrow.unmount()
   })
@@ -395,11 +397,11 @@ describe('spank', () => {
     const { clock, seen, feed, holdClips, releaseClips } = await harness($, on)
 
     holdClips()
-    await feed(slapLine(4, 0.6, T0))
+    await feed(slapLine(0.6, T0))
     await clock.advance(1100)
-    await feed(slapLine(1, 0.07, T0 + 1100))
+    await feed(slapLine(0.07, T0 + 1100))
     await clock.advance(1100)
-    await feed(slapLine(1, 0.08, T0 + 2200))
+    await feed(slapLine(0.08, T0 + 2200))
     expect(seen.clipsCut).toBe(2)
     releaseClips()
 
@@ -411,7 +413,7 @@ describe('spank', () => {
     const ui = await $.ui.mount(BAND)
 
     for (let i = 0; i < 7; i++) {
-      await feed(slapLine(1, 0.07, T0 + i * 600))
+      await feed(slapLine(0.07, T0 + i * 600))
       await clock.advance(600)
     }
     expect(seen.played).toEqual([CLIP_1, CLIP_1, CLIP_2, CLIP_2, CLIP_2, CLIP_3, CLIP_3])
@@ -423,7 +425,7 @@ describe('spank', () => {
     expect(seen.statuses.at(-1)).toBe('spank: 7 this session, last L1 (0.07g)')
 
     // More than a second's pause ends it.
-    await feed(slapLine(1, 0.07, T0 + 6 * 600 + 1100))
+    await feed(slapLine(0.07, T0 + 6 * 600 + 1100))
     expect(seen.played.at(-1)).toBe(CLIP_1)
     expect(await ui.find({ text: /level 1 of 5, 0\.07g$/ })).toBeDefined()
     await ui.unmount()
@@ -433,14 +435,14 @@ describe('spank', () => {
     const { seen, feed } = await harness($, on, {})
 
     // Read together, heard 1.2s apart: no combo.
-    await feed(slapLine(2, 0.2, T0), slapLine(2, 0.2, T0 + 1200), slapLine(2, 0.2, T0 + 2400))
+    await feed(slapLine(0.2, T0), slapLine(0.2, T0 + 1200), slapLine(0.2, T0 + 2400))
     expect(seen.played).toEqual([CLIP_2, CLIP_2, CLIP_2])
   })
 
   test('a combo never goes past level 5', SLOW, async ($, on) => {
     const { seen, feed } = await harness($, on, {})
 
-    await feed(slapLine(5, 1.4, T0), slapLine(5, 1.4, T0 + 500), slapLine(5, 1.4, T0 + 1000))
+    await feed(slapLine(1.4, T0), slapLine(1.4, T0 + 500), slapLine(1.4, T0 + 1000))
     expect(seen.played).toEqual([CLIP_5, CLIP_5, CLIP_5])
   })
 
@@ -449,12 +451,12 @@ describe('spank', () => {
 
     await turnStart('turn-1')
     for (let i = 0; i < 5; i++) {
-      await feed(slapLine(2, 0.2, T0 + i * 500))
+      await feed(slapLine(0.2, T0 + i * 500))
       await clock.advance(500)
     }
     expect(seen.aborted).toEqual([])
 
-    await feed(slapLine(2, 0.2, T0 + 5 * 500))
+    await feed(slapLine(0.2, T0 + 5 * 500))
     expect(seen.aborted).toEqual(['turn-1'])
     expect(seen.toasts.at(-1)).toBe('Stopped Claude. L4')
     expect(seen.notes).toHaveLength(1)
@@ -468,15 +470,15 @@ describe('spank', () => {
     await turnStart('turn-1')
     // Steady shaking: level 1 after level 1, up to a level 4 combo.
     for (let i = 0; i < 9; i++) {
-      await feed(slapLine(1, 0.07, T0 + i * 450))
+      await feed(slapLine(0.07, T0 + i * 450))
       await clock.advance(450)
     }
-    await feed(slapLine(2, 0.2, T0 + 9 * 450))
+    await feed(slapLine(0.2, T0 + 9 * 450))
     expect(seen.played.at(-1)).toBe('assets/voices/sakura/level_5.mp3')
     expect(seen.aborted).toEqual([])
 
     // A hard slap still does.
-    await feed(slapLine(4, 0.6, T0 + 10 * 450))
+    await feed(slapLine(0.6, T0 + 10 * 450))
     expect(seen.aborted).toEqual(['turn-1'])
     expect(seen.notes.at(-1)).toContain('It was hard enough to stop your turn')
   })
@@ -484,9 +486,9 @@ describe('spank', () => {
   test('a combo begun before a turn does not carry into it', SLOW, async ($, on) => {
     const { seen, feed, turnStart } = await harness($, on)
 
-    await feed(...[0, 1, 2, 3, 4].map(i => slapLine(2, 0.2, T0 + i * 500)))
+    await feed(...[0, 1, 2, 3, 4].map(i => slapLine(0.2, T0 + i * 500)))
     await turnStart('turn-1')
-    await feed(slapLine(2, 0.2, T0 + 5 * 500))
+    await feed(slapLine(0.2, T0 + 5 * 500))
 
     expect(seen.played.at(-1)).toBe(CLIP_2)
     expect(seen.aborted).toEqual([])
@@ -495,22 +497,22 @@ describe('spank', () => {
   test('slaps in a row put up one toast at a time', SLOW, async ($, on) => {
     const { clock, seen, feed } = await harness($, on, {})
 
-    await feed(slapLine(3, 0.3, T0))
+    await feed(slapLine(0.3, T0))
     await clock.advance(1500)
-    await feed(slapLine(2, 0.2, T0 + 1500))
+    await feed(slapLine(0.2, T0 + 1500))
     await clock.advance(1500)
-    await feed(slapLine(3, 0.3, T0 + 3000))
+    await feed(slapLine(0.3, T0 + 3000))
     expect(seen.toasts).toEqual(['いたっ！ L3'])
     expect(seen.played).toEqual([CLIP_3, CLIP_2, CLIP_3])
 
     // Harder than the one showing.
     await clock.advance(500)
-    await feed(slapLine(4, 0.6, T0 + 3500))
+    await feed(slapLine(0.6, T0 + 3500))
     expect(seen.toasts).toEqual(['いたっ！ L3', 'きゃっ！ L4'])
 
     // The L4 one's gone by now.
     await clock.advance(4000)
-    await feed(slapLine(2, 0.2, T0 + 7500))
+    await feed(slapLine(0.2, T0 + 7500))
     expect(seen.toasts).toEqual(['いたっ！ L3', 'きゃっ！ L4', 'あっ！ L2'])
   })
 
@@ -518,10 +520,10 @@ describe('spank', () => {
     const { clock, seen, feed, turnStart } = await harness($, on)
 
     await turnStart('turn-1')
-    await feed(slapLine(1, 0.07, T0))
+    await feed(slapLine(0.07, T0))
     for (let i = 1; i < 4; i++) {
       await clock.advance(1200)
-      await feed(slapLine(1, 0.07, T0 + i * 1200))
+      await feed(slapLine(0.07, T0 + i * 1200))
     }
     // The last slap came at 3.6s: its quiet 1.5s would end at 5.1s.
     await clock.advance(300)
@@ -531,7 +533,7 @@ describe('spank', () => {
     expect(seen.notes[0]).toContain('The user just physically slapped their laptop 4 times')
 
     // The next slap starts a burst of its own.
-    await feed(slapLine(2, 0.2, T0 + 4800))
+    await feed(slapLine(0.2, T0 + 4800))
     await clock.advance(1500)
     expect(seen.notes).toHaveLength(2)
     expect(seen.notes[1]).toContain('The user just physically slapped their laptop (')
@@ -567,6 +569,45 @@ describe('spank', () => {
     expect(seen.spawned[0]?.slice(1)).toEqual(['--threshold', '0.12'])
   })
 
+  test('settings: levels start at the sensitivity and reach 5 at 1g', { ...SLOW, options: { threshold: 0.152 } }, async ($, on) => {
+    const { seen, feed } = await harness($, on, {})
+
+    // Levels from 0.152g, 0.243g, 0.390g, 0.624g and 1g; 2s apart, no combo.
+    const peaks = [0.16, 0.25, 0.4, 0.63, 1, 0.24]
+    for (const [i, peak] of peaks.entries()) await feed(slapLine(peak, T0 + i * 2000))
+
+    expect(seen.played).toEqual([CLIP_1, CLIP_2, CLIP_3, CLIP_4, CLIP_5, CLIP_1])
+    expect(seen.statuses.at(-1)).toBe('spank: 6 this session, last L1 (0.24g)')
+  })
+
+  test('settings: at the default sensitivity levels 2 to 5 start at 0.106, 0.224, 0.473 and 1g', SLOW, async ($, on) => {
+    const { seen, feed } = await harness($, on, {})
+
+    const peaks = [0.05, 0.105, 0.107, 0.223, 0.225, 0.472, 0.474, 0.99, 1]
+    for (const [i, peak] of peaks.entries()) await feed(slapLine(peak, T0 + i * 2000))
+
+    expect(seen.played).toEqual([CLIP_1, CLIP_1, CLIP_2, CLIP_2, CLIP_3, CLIP_3, CLIP_4, CLIP_4, CLIP_5])
+  })
+
+  test('settings: below 0.05g the levels stay as at 0.05g', { ...SLOW, options: { threshold: 0.01 } }, async ($, on) => {
+    const { seen, feed } = await harness($, on, {})
+
+    const peaks = [0.02, 0.2, 0.3, 0.6]
+    for (const [i, peak] of peaks.entries()) await feed(slapLine(peak, T0 + i * 2000))
+
+    expect(seen.played).toEqual([CLIP_1, CLIP_2, CLIP_3, CLIP_4])
+  })
+
+  test('settings: at 1g level 5 starts at 4g, so there are still five levels', { ...SLOW, options: { threshold: 1 } }, async ($, on) => {
+    const { seen, feed } = await harness($, on, {})
+
+    // Levels from 1g, 1.414g, 2g, 2.828g and 4g.
+    const peaks = [1, 1.5, 2.1, 3, 4]
+    for (const [i, peak] of peaks.entries()) await feed(slapLine(peak, T0 + i * 2000))
+
+    expect(seen.played).toEqual([CLIP_1, CLIP_2, CLIP_3, CLIP_4, CLIP_5])
+  })
+
   test('settings: by default slapd gets the manifest default', SLOW, async ($, on) => {
     const { seen } = await harness($, on)
     expect(seen.spawned[0]?.slice(1)).toEqual(['--threshold', '0.05'])
@@ -576,28 +617,28 @@ describe('spank', () => {
     const { seen, feed, turnStart } = await harness($, on)
 
     await turnStart('turn-1')
-    await feed(slapLine(4, 0.6))
+    await feed(slapLine(0.6))
     expect(seen.aborted).toEqual([])
-    await feed(slapLine(5, 1.2))
+    await feed(slapLine(1.2))
     expect(seen.aborted).toEqual(['turn-1'])
   })
 
   test('settings: volume scales the clip', { ...SLOW, options: { volume: 2.5 } }, async ($, on) => {
     const { seen, feed } = await harness($, on)
-    await feed(slapLine(3, 0.3))
+    await feed(slapLine(0.3))
     expect(seen.gains).toEqual([2.5])
   })
 
   test('settings: volume 0 plays nothing', { ...SLOW, options: { volume: 0 } }, async ($, on) => {
     const { seen, feed } = await harness($, on)
-    await feed(slapLine(3, 0.3))
+    await feed(slapLine(0.3))
     expect(seen.played).toEqual([])
   })
 
   test('settings: faces are large by default', SLOW, async ($, on) => {
     const { feed } = await harness($, on)
     const ui = await $.ui.mount(BAND)
-    await feed(slapLine(3, 0.3))
+    await feed(slapLine(0.3))
     expect((await ui.find({ key: 'face' }))?.props.rows).toBe(16)
     await ui.unmount()
   })
@@ -606,7 +647,7 @@ describe('spank', () => {
     test(`settings: face size ${size}`, { ...SLOW, options: { face_size: size } }, async ($, on) => {
       const { feed } = await harness($, on)
       const ui = await $.ui.mount(BAND)
-      await feed(slapLine(3, 0.3))
+      await feed(slapLine(0.3))
       expect((await ui.find({ key: 'face' }))?.props.rows).toBe(rows)
       await ui.unmount()
     })
@@ -624,7 +665,7 @@ describe('spank', () => {
   test('settings: face series natsu shows her faces and plays her voice', { ...SLOW, options: { face_series: 'natsu' } }, async ($, on) => {
     const { seen, feed } = await harness($, on)
     const ui = await $.ui.mount(BAND)
-    await feed(slapLine(3, 0.3))
+    await feed(slapLine(0.3))
     expect(seen.played).toEqual(['assets/voices/natsu/level_3.mp3'])
     expect(seen.toasts).toEqual(['いてっ！ L3'])
     expect((await ui.find({ key: 'face' }))?.props.cells).toBe(FACES.natsu[2]?.[2]?.cells)
@@ -635,7 +676,7 @@ describe('spank', () => {
   test('settings: face series aki shows her faces and plays her voice', { ...SLOW, options: { face_series: 'aki' } }, async ($, on) => {
     const { seen, feed } = await harness($, on)
     const ui = await $.ui.mount(BAND)
-    await feed(slapLine(3, 0.3))
+    await feed(slapLine(0.3))
     expect(seen.played).toEqual(['assets/voices/aki/level_3.mp3'])
     expect(seen.toasts).toEqual(['いたぁ！ L3'])
     expect((await ui.find({ key: 'face' }))?.props.cells).toBe(FACES.aki[2]?.[2]?.cells)
@@ -646,7 +687,7 @@ describe('spank', () => {
   test('settings: an unknown face series falls back to the default', { ...SLOW, options: { face_series: 'nobody' } }, async ($, on) => {
     const { seen, feed } = await harness($, on)
     const ui = await $.ui.mount(BAND)
-    await feed(slapLine(3, 0.3))
+    await feed(slapLine(0.3))
     expect(seen.played).toEqual(['assets/voices/sakura/level_3.mp3'])
     expect(seen.toasts).toEqual(['いたっ！ L3'])
     expect((await ui.find({ key: 'face' }))?.type).toBe('Raster')
@@ -672,7 +713,7 @@ describe('spank', () => {
     // Switched already, before the reload that saving brings.
     expect((await slaps('who')).text).toBe('sakura, natsu (current), aki')
     expect((await slaps('who natsu')).text).toBe('Natsu already. Slap away.')
-    await feed(slapLine(3, 0.3))
+    await feed(slapLine(0.3))
     expect(seen.played).toEqual(['assets/voices/natsu/level_3.mp3'])
     expect(seen.configured).toHaveLength(1)
   })
@@ -707,13 +748,13 @@ describe('spank', () => {
     expect(JSON.parse(active() ?? '{}').session).toBe('session-a')
 
     setActive(JSON.stringify({ session: 'session-b', at: 1 }))
-    await feed(slapLine(3, 0.3))
+    await feed(slapLine(0.3))
     expect(seen.toasts).toEqual([])
     expect(seen.played).toEqual([])
 
     await slaps()
     expect(JSON.parse(active() ?? '{}').session).toBe('session-a')
-    await feed(slapLine(3, 0.3))
+    await feed(slapLine(0.3))
     expect(seen.toasts).toEqual(['いたっ！ L3'])
   })
 
@@ -721,7 +762,7 @@ describe('spank', () => {
     const { seen, feed, setActive } = await harness($, on)
 
     setActive('{"session": "sess')
-    await feed(slapLine(3, 0.3))
+    await feed(slapLine(0.3))
     expect(seen.toasts).toEqual(['いたっ！ L3'])
   })
 
@@ -742,7 +783,7 @@ describe('spank', () => {
     await feedRaw(0.003, 0.3, 0.004, 0.12, 0.2, 0.003)
     expect(seen.statuses).toContain('spank: calibrating 2/2: knock on the desk 3 times (8s from the first knock)')
     expect(seen.statuses.at(-1)).toBe('spank: calibrating 2/2: keep knocking (8s)')
-    await feed(slapLine(3, 0.3))
+    await feed(slapLine(0.3))
     await feedRaw(0.25, 0.002)
     await clock.advance(8000)
     await feedRaw(0.002) // the first reading after the end finishes it
@@ -897,7 +938,7 @@ describe('spank', () => {
     const { clock, seen, feed, feedRaw, slaps } = await harness($, on)
 
     await slaps('calibrate')
-    await feed(slapLine(3, 0.3))
+    await feed(slapLine(0.3))
     expect(seen.toasts.filter(t => t.endsWith('L3'))).toEqual([])
 
     // Waiting for the first key: 30s, and 5s of slack.
@@ -905,7 +946,7 @@ describe('spank', () => {
     expect(seen.toasts.at(-1)).not.toBe('Calibration failed: the sensor went quiet.')
     await clock.advance(1000)
     expect(seen.toasts.at(-1)).toBe('Calibration failed: the sensor went quiet.')
-    await feed(slapLine(3, 0.3))
+    await feed(slapLine(0.3))
     expect(seen.toasts.filter(t => t.endsWith('L3'))).toEqual(['いたっ！ L3'])
 
     // The reader stops once its waiting pull lets go.
@@ -951,11 +992,11 @@ describe('spank', () => {
     const { seen, feed, slaps } = await harness($, on)
 
     expect((await slaps('mute')).text).toBe('Laptop voice off.')
-    await feed(slapLine(3, 0.4))
+    await feed(slapLine(0.4))
     expect(seen.played).toEqual([])
 
     expect((await slaps('unmute')).text).toBe('Laptop voice on.')
-    await feed(slapLine(3, 0.4))
+    await feed(slapLine(0.4))
     expect(seen.played).toEqual(['assets/voices/sakura/level_3.mp3'])
   })
 })

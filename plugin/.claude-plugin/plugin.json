@@ -1,6 +1,6 @@
 {
   "name": "spank",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Slap your MacBook and Claude Code feels it: a face, a yelp, and optionally a stopped turn",
   "author": { "name": "Slim", "url": "https://github.com/slima4" },
   "repository": "https://github.com/slima4/spank-claude",
@@ -10,7 +10,7 @@
     "threshold": {
       "type": "number",
       "title": "Slap sensitivity (g)",
-      "description": "The smallest shake that counts as a slap, in g. Raise it if typing counts as slapping; lower it if desk knocks are missed.",
+      "description": "The smallest shake that counts as a slap, in g; level 1 starts here and level 5 at 1 g. Raise it if typing counts as slapping; lower it if desk knocks are missed.",
       "default": 0.05,
       "min": 0.01,
       "max": 1

@@ -30,13 +30,23 @@ message — and a hard enough slap stops it mid-turn.
 
 ## The pain scale
 
-| Level | Hit          | Sakura says | Natsu says  | Aki says    | What probably happened             |
-| ----- | ------------ | ----------- | ----------- | ----------- | ---------------------------------- |
-| 1     | 0.05–0.1 g   | んっ！      | えっ！      | ひゃっ！    | A tap. Passive-aggressive at most. |
-| 2     | 0.1–0.25 g   | あっ！      | うっ！      | あれっ！    | The tests failed again.            |
-| 3     | 0.25–0.5 g   | いたっ！    | いてっ！    | いたぁ！    | Claude "simplified" your code.     |
-| 4     | 0.5–1 g      | きゃっ！    | やっ！      | いやっ！    | Claude deleted the tests to make them pass. |
-| 5     | 1 g and up   | あぁっ…！   | うわぁっ！  | きゃあっ！  | Production.                        |
+| Level | Hit (at 0.05 g) | Sakura says | Natsu says  | Aki says    | What probably happened             |
+| ----- | --------------- | ----------- | ----------- | ----------- | ---------------------------------- |
+| 1     | 0.050–0.106 g   | んっ！      | えっ！      | ひゃっ！    | A tap. Passive-aggressive at most. |
+| 2     | 0.106–0.224 g   | あっ！      | うっ！      | あれっ！    | The tests failed again.            |
+| 3     | 0.224–0.473 g   | いたっ！    | いてっ！    | いたぁ！    | Claude "simplified" your code.     |
+| 4     | 0.473–1 g       | きゃっ！    | やっ！      | いやっ！    | Claude deleted the tests to make them pass. |
+| 5     | 1 g and up      | あぁっ…！   | うわぁっ！  | きゃあっ！  | Production.                        |
+
+The g ranges are for the default sensitivity, 0.05 g. The scale moves with
+yours (`/slaps calibrate`, or "Slap sensitivity" in `/config`): level 1 starts
+at your sensitivity, level 5 at 1 g, and the levels between are spread evenly.
+At 0.15 g, for example, they start at about 0.15, 0.24, 0.39, 0.62 and 1 g.
+
+Two exceptions. Below 0.05 g the scale stays as it is at 0.05 g: softer taps
+count, as level 1, but a moderate slap doesn't turn into a level 4. Above
+0.25 g, level 5 starts at 4 times your sensitivity instead of 1 g, so the
+levels don't bunch up.
 
 ### Combos
 
@@ -75,9 +85,10 @@ then `/plugin install spank@spank-claude`.)
 
 Start Claude Code. The first session builds the sensor reader (the status line
 says `spank: building the sensor reader`, about 20 seconds), then shows
-`spank: armed`. Go on. Slap it.
+`spank: armed (0.05g)`. Go on. Slap it.
 
 Updates: `claude plugin update spank@spank-claude`, then restart Claude Code.
+Each new version builds its sensor reader again on its first start.
 Uninstall: `claude plugin uninstall spank@spank-claude`.
 
 ## Commands
@@ -90,25 +101,26 @@ Uninstall: `claude plugin uninstall spank@spank-claude`.
 | `/slaps calibrate`   | Type 6 s (no Enter), knock 3 times; it picks the sensitivity. |
 | `/slaps mute`        | Silences her. The faces still judge you.                    |
 | `/slaps unmute`      | She's back.                                                 |
-| `/slaps claude on`   | Slaps reach Claude, and level 4+ stops its running turn.    |
+| `/slaps claude on`   | Slaps reach Claude; a level 4+ slap or combo stops its turn. |
 | `/slaps claude off`  | Claude stays blissfully unaware (the default).              |
 | `/slaps image`       | Checks whether your terminal can show real pictures.        |
 
 ### Claude mode
 
 With `/slaps claude on`, every slap becomes a quiet note in the conversation:
-*"The user just physically slapped their laptop 2 times (strongest hit level 3
-of 5). Take it as nonverbal frustration…"* Claude reads it on its next step,
-acknowledges it, and reconsiders what it was doing. Slaps that keep coming are
-told as one note once you pause, or 4 seconds after the first, whichever comes
-sooner. Slaps while it's idle are saved up and delivered as one note with your
-next message, so it gets the whole story at once.
+*"The user just physically slapped their laptop 2 times (accelerometer;
+strongest hit level 3 of 5, 0.31g). Take it as nonverbal frustration…"*
+Claude reads it on its next step, acknowledges it, and reconsiders what it was
+doing. Slaps that keep coming are told as one note once you pause, or 4
+seconds after the first, whichever comes sooner. Slaps while it's idle are
+saved up and delivered as one note with your next message, so it gets the
+whole story at once.
 
-A level 4+ slap while Claude is working stops the turn on the spot, and so
-does a combo that builds up to level 4, as long as none of its slaps was a
-level 1 graze (so a bumpy train never does). Fair warning: a shell command
-Claude already started keeps running in the background; the slap stops Claude,
-not the command.
+A level 4+ slap while Claude is working stops the turn on the spot (the level
+is a setting). So does a combo that builds up to it, unless one of its slaps
+was a level 1 graze, so the steady shaking of a bumpy train doesn't. Fair
+warning: a shell command Claude already started keeps running in the
+background; the slap stops Claude, not the command.
 
 ### Several sessions
 
@@ -143,7 +155,7 @@ Open `/config` in Claude Code (or `/plugin configure spank@spank-claude`):
 
 | Setting                 | Default | What it does                                              |
 | ----------------------- | ------- | --------------------------------------------------------- |
-| Slap sensitivity (g)    | 0.05    | Smallest shake that counts. Typing counts? Raise it.      |
+| Slap sensitivity (g)    | 0.05    | Smallest shake that counts, and where level 1 starts. Typing counts? Raise it. |
 | Level that stops Claude | 4       | With `/slaps claude on`, this level or harder stops a turn. |
 | Face series             | sakura  | `sakura`, `natsu` or `aki`: whose face pops up and voice yelps. |
 | Face size               | large   | `large`, `medium`, `small`, or `off`.                     |
@@ -162,10 +174,10 @@ each. The status line then shows it, e.g. `spank: armed (0.077g)`.
  MacBook IMU (AppleSPUHIDDevice, ~1 kHz)
       │  IOKit HID reports, x/y/z in 1/65536 g
       ▼
- slapd (Swift) ── removes gravity, finds the peak, grades it 1–5
-      │  {"type":"slap","peak":0.42,"level":3} on stdout
+ slapd (Swift) ── removes gravity, finds the peak
+      │  {"type":"slap","ts":…,"peak":0.42} on stdout
       ▼
- spank plugin (Claude Code hooks)
+ spank plugin (Claude Code hooks) ── grades it 1–5 for your sensitivity
       ├─ status line + toast
       ├─ face above the prompt (Raster cells, 3 s)
       ├─ voice clip per level

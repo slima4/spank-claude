@@ -1,7 +1,8 @@
 // slapd: reads the MacBook's built-in accelerometer (Apple Silicon SPU,
 // AppleSPUHIDDevice, vendor usage page 0xFF00 / usage 3) and writes one JSON
-// line per detected hit to stdout (and, with --out, appended to a file).
-// The spank Claude Code plugin spawns it and reads its stdout.
+// line per detected hit, its time and peak, to stdout (and, with --out,
+// appended to a file). The spank Claude Code plugin spawns it, reads its
+// stdout and turns each peak into a level.
 //
 // Runs unprivileged on macOS 27; older releases refuse the HID device
 // without root, so prefix sudo there:
@@ -149,7 +150,6 @@ final class Detector {
                     "type": "slap",
                     "ts": nowMs(),
                     "peak": num(eventPeak),
-                    "level": level(eventPeak),
                 ])
                 eventStart = nil
                 lastHit = t
@@ -163,16 +163,6 @@ final class Detector {
             eventPeak = mag
         } else {
             noise += (1 - exp(-dt / 2.0)) * (mag - noise)
-        }
-    }
-
-    func level(_ g: Double) -> Int {
-        switch g {
-        case ..<0.1: return 1
-        case ..<0.25: return 2
-        case ..<0.5: return 3
-        case ..<1.0: return 4
-        default: return 5
         }
     }
 }

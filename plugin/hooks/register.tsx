@@ -44,18 +44,26 @@ const CALIBRATE_FLOOR = 0.025
 const CALIBRATE_SLACK_MS = 5000
 // How long /slaps image shows its test picture.
 const PROBE_MS = 10000
+// The levels' scale, in g: level 1 starts at the sensitivity, but never
+// below LEVEL_1_G, so a lower one lets softer taps count (as level 1) without
+// making a moderate slap level 4; level 5 starts at LEVEL_5_G, a firm palm,
+// but at least LEVEL_SPAN times level 1, so a sensitivity near 1g still has
+// five levels.
+const LEVEL_1_G = 0.05
+const LEVEL_5_G = 1
+const LEVEL_SPAN = 4
 
-// slapd's lines: it opened the sensor, heard a slap, or (with --raw, every
-// 0.1s) the loudest shake of that moment.
-type Line = { type: 'start' } | ({ type: 'slap' } & Slap) | { type: 'raw'; peak: number }
+// slapd's lines: it opened the sensor, heard a slap (when, and how hard), or
+// (with --raw, every 0.1s) the loudest shake of that moment.
+type Line = { type: 'start' } | { type: 'slap'; ts: number; peak: number } | { type: 'raw'; peak: number }
 
 function parseLine(line: string): Line | undefined {
   try {
     const v = JSON.parse(line) as Record<string, unknown>
     if (v.type === 'start') return { type: 'start' }
     if (v.type === 'raw' && typeof v.peak === 'number') return { type: 'raw', peak: v.peak }
-    if (v.type === 'slap' && typeof v.ts === 'number' && typeof v.peak === 'number' && typeof v.level === 'number') {
-      return { type: 'slap', ts: v.ts, peak: v.peak, level: v.level }
+    if (v.type === 'slap' && typeof v.ts === 'number' && typeof v.peak === 'number') {
+      return { type: 'slap', ts: v.ts, peak: v.peak }
     }
   } catch {}
   return undefined
@@ -117,8 +125,23 @@ let bandRequestId: string | undefined
 
 // The config menu's values (the manifest's userConfig). A change there reloads
 // the module, so register reads them afresh.
-type Settings = { threshold: number; stopLevel: number; faceRows: number; volume: number; series: SeriesId }
-let settings: Settings = { threshold: 0.05, stopLevel: 4, faceRows: 16, volume: 1, series: DEFAULT_SERIES }
+// `levels` is where levels 2 to 5 start, in g, for the sensitivity.
+type Settings = {
+  threshold: number
+  levels: number[]
+  stopLevel: number
+  faceRows: number
+  volume: number
+  series: SeriesId
+}
+let settings: Settings = {
+  threshold: 0.05,
+  levels: levelStarts(0.05),
+  stopLevel: 4,
+  faceRows: 16,
+  volume: 1,
+  series: DEFAULT_SERIES,
+}
 
 function readSettings(options: PluginOptions): Settings {
   const number = (key: string, fallback: number) => {
@@ -126,13 +149,30 @@ function readSettings(options: PluginOptions): Settings {
     return typeof value === 'number' && Number.isFinite(value) ? value : fallback
   }
   const faceSize = options.face_size
+  // Within the manifest's 0.01-1g: the engine refuses options outside it.
+  const threshold = number('threshold', 0.05)
   return {
-    threshold: number('threshold', 0.05),
+    threshold,
+    levels: levelStarts(threshold),
     stopLevel: number('stop_level', 4),
     faceRows: typeof faceSize === 'string' ? (FACE_ROWS[faceSize] ?? 16) : 16,
     volume: number('volume', 1),
     series: isSeries(options.face_series) ? options.face_series : DEFAULT_SERIES,
   }
+}
+
+// Where levels 2 to 5 start for a sensitivity: evenly spaced on a log scale
+// between level 1 and level 5 (see LEVEL_1_G), each a fixed multiple above
+// the last.
+function levelStarts(threshold: number) {
+  const first = Math.max(threshold, LEVEL_1_G)
+  const fifth = Math.max(LEVEL_5_G, first * LEVEL_SPAN)
+  return [1, 2, 3, 4].map(k => first * (fifth / first) ** (k / 4))
+}
+
+// A slap's level, 1 to 5; any slap that counts is at least level 1.
+function levelOf(peak: number) {
+  return 1 + settings.levels.filter(start => peak >= start).length
 }
 
 // The chosen series' voice: its clips' folder and what each level says.
@@ -543,7 +583,7 @@ async function listen($: EngineInterface) {
       for (const line of lines(text)) {
         const parsed = parseLine(line)
         if (parsed?.type === 'start') setSensorStatus($, `spank: armed (${settings.threshold}g)`)
-        if (parsed?.type === 'slap') await onSlap($, parsed)
+        if (parsed?.type === 'slap') await onSlap($, { ts: parsed.ts, peak: parsed.peak, level: levelOf(parsed.peak) })
       }
     }
   } catch (error) {
