@@ -50,13 +50,18 @@ levels don't bunch up.
 
 ### Combos
 
-Keep slapping, less than a second apart, and it adds up: from the third slap
-in a row on, each counts one level harder than it hit, from the sixth two
-levels, and so on, so a dozen soft taps make her scream. Each slap cuts her off
-and gets a yelp of its own, and the face says how many came in a row. A toast
-goes up only when none is showing or the level climbs past it, so the corner
-of the screen stays tidy. The score (`/slaps`, the status line) still keeps
-what the sensor read.
+Keep slapping, less than a second apart, and every tap counts, however soft:
+each is one level above the one before, or its own level if it hit harder, and
+the level never drops until you pause. Five soft taps make her scream. A
+harder slap cuts her off with its own yelp; one at the same level does too,
+but stays quiet if her last yelp is under 0.4 s old, so drumming doesn't
+stutter. The face says how many came in a row, and a combo puts up one toast
+as it starts and one as it ends, saying how far it got. The score (`/slaps`,
+the status line) still keeps what the sensor read.
+
+Taps can come as fast as about 7 a second. A hard slap leaves the laptop
+ringing, so the next tap counts once that has died down, usually within a
+fraction of a second.
 
 ## What you need
 
@@ -117,8 +122,9 @@ saved up and delivered as one note with your next message, so it gets the
 whole story at once.
 
 A level 4+ slap while Claude is working stops the turn on the spot (the level
-is a setting). So does a combo that builds up to it, unless one of its slaps
-was a level 1 graze, so the steady shaking of a bumpy train doesn't. Fair
+is a setting). So does a combo that builds up to it and lasts at least half a
+second (so one slap that bounces doesn't), unless one of its slaps was a
+level 1 graze (so the steady shaking of a bumpy train doesn't). Fair
 warning: a shell command Claude already started keeps running in the
 background; the slap stops Claude, not the command.
 

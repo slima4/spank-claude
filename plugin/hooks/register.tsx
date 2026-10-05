@@ -18,15 +18,18 @@ const probe = atom({ plugin: 'spank', key: 'probe' } as const, false)
 // most this long after the first, so slapping on and on still gets through.
 const BURST_MS = 1500
 const BURST_MAX_MS = 4000
-// Slaps at most this far apart, by the sensor's clock, are a combo: from its
-// COMBO_STEP-th slap on each counts one level harder than it hit, from its
-// 2 x COMBO_STEP-th two levels, and so on.
+// Slaps at most this far apart, by the sensor's clock, are a combo: each
+// counts one level above the one before, or its own if that is harder. A
+// combo stops Claude only once it has lasted COMBO_STOP_MS, so one slap that
+// bounces never does.
 const COMBO_MS = 1000
-const COMBO_STEP = 3
+const COMBO_STOP_MS = 500
 // How long a slap's face stays above the prompt.
 const FACE_MS = 3000
-// How long a slap's toast stays; slaps meanwhile add none of their own.
+// How long a slap's toast stays.
 const TOAST_MS = 4000
+// How long a clip plays before a slap no harder than it may cut it off.
+const VOICE_MS = 400
 // The tallest face per face_size setting, in rows; 0 draws none.
 const FACE_ROWS: Record<string, number> = { large: 16, medium: 12, small: 8, off: 0 }
 // Room the face leaves beside it for its line.
@@ -105,17 +108,20 @@ function note(slaps: readonly Slap[], moment: Moment) {
 }
 
 // Slaps not yet told to Claude, when the first of them came, the timer that
-// tells it, the combo under way (its slaps, when the last hit, and the
-// softest level among them), the last slap toast (when, and its level), how
-// to stop the voice clip playing, the timer that hides the face, a
-// calibration under way, and the status line the sensor last set (which a
-// calibration puts back). Reset by register, so each load starts clean.
+// tells it, the combo under way (its slaps, when the first and the last hit,
+// the softest level among them, and the level it is at), its end toast still
+// to come (the timer, and how to show it at once), the last slap toast (when,
+// and its level), the voice clip playing (its level, when it started, and how
+// to stop it), the timer that hides the face, a calibration under way, and
+// the status line the sensor last set (which a calibration puts back). Reset
+// by register, so each load starts clean.
 let burst: Slap[] = []
 let burstSince = 0
 let burstTimer: Timer | undefined
-let combo: { count: number; at: number; weakest: number } | undefined
+let combo: { count: number; since: number; at: number; weakest: number; level: number } | undefined
+let comboEnd: { timer: Timer; show: () => Promise<void> } | undefined
 let toast: { at: number; level: number } | undefined
-let playing: AbortController | undefined
+let playing: { level: number; at: number; stop: AbortController } | undefined
 let faceTimer: Timer | undefined
 let calibration: Calibration | undefined
 let sensorStatus: string | undefined
@@ -216,23 +222,37 @@ function faceArt(level: number, maxRows: number, columns: number) {
   return arts.findLast(art => art.rows <= Math.min(maxRows, settings.faceRows) && art.columns + FACE_TEXT_COLUMNS <= columns)
 }
 
+function showToast($: EngineInterface, at: number, level: number, text: string) {
+  toast = { at, level }
+  $.ui.toast(text, { timeoutMs: TOAST_MS })
+}
+
+// Takes back the combo's end toast still to come, showing it first if asked.
+function settleComboEnd(isShown: boolean) {
+  const end = comboEnd
+  comboEnd = undefined
+  end?.timer.cancel()
+  if (isShown) void end?.show().catch(() => {})
+}
+
 async function showFace($: EngineInterface, shown: FaceShown) {
   faceTimer?.cancel()
   await update($, face, () => shown)
   faceTimer = $.clock.after(FACE_MS, () => void update($, face, () => null))
 }
 
-// Plays the level's clip, cutting off the one still playing, so each slap
-// gets its own yelp. slapd hears a hit at most every 0.4s, so a cut clip has
-// had its say.
-function voice($: EngineInterface, level: number) {
+// Plays the level's clip, cutting off the one still playing: always if it is
+// harder, else only once that one has played VOICE_MS, so drumming at one
+// level does not stutter (a slap sooner than that stays quiet).
+function voice($: EngineInterface, level: number, now: number) {
   if (settings.volume <= 0) return
-  playing?.abort()
-  const clip = new AbortController()
+  if (playing !== undefined && level <= playing.level && now - playing.at < VOICE_MS) return
+  playing?.stop.abort()
+  const clip = { level, at: now, stop: new AbortController() }
   playing = clip
   const asset = `assets/voices/${voiceOf().id}/level_${level}.mp3`
   $.audio
-    .play({ asset }, { signal: clip.signal, gain: settings.volume })
+    .play({ asset }, { signal: clip.stop.signal, gain: settings.volume })
     .catch(() => {})
     .finally(() => {
       if (playing === clip) playing = undefined
@@ -485,14 +505,17 @@ async function onSlap($: EngineInterface, slap: Slap) {
   const now = await $.clock.now()
   const gap = combo === undefined ? undefined : slap.ts - combo.at
   const prior = gap !== undefined && gap >= 0 && gap <= COMBO_MS ? combo : undefined
+  // The slap's level in its combo, which never drops until the combo ends:
+  // what she shows and says, and what stops Claude. The score keeps what the
+  // sensor read.
+  const level = Math.min(Math.max(slap.level, (prior?.level ?? 0) + 1), 5)
   combo = {
     count: (prior?.count ?? 0) + 1,
+    since: prior?.since ?? slap.ts,
     at: slap.ts,
     weakest: Math.min(prior?.weakest ?? slap.level, slap.level),
+    level,
   }
-  // The slap's level with the combo's added: what she shows and says, and
-  // what stops Claude. The score keeps what the sensor read.
-  const level = Math.min(Math.max(slap.level, 1) + Math.floor(combo.count / COMBO_STEP), 5)
 
   const n = await update($, count, c => c + 1)
   await update($, last, () => slap)
@@ -502,22 +525,39 @@ async function onSlap($: EngineInterface, slap: Slap) {
   const isClaudeOn = (await $.store.get('claude')) === true
   const turnId = await read($, turn)
   // A combo stops a turn only if none of its slaps barely registered (level
-  // 1), so steady shaking, a train or heavy typing, never does.
+  // 1), so steady shaking, a train or heavy typing, never does, and only once
+  // it has lasted COMBO_STOP_MS.
   const isHard = slap.level >= settings.stopLevel
-  const isStopping = isClaudeOn && turnId !== null && level >= settings.stopLevel && (isHard || combo.weakest >= 2)
+  const isComboStop = combo.weakest >= 2 && slap.ts - combo.since >= COMBO_STOP_MS
+  const isStopping = isClaudeOn && turnId !== null && level >= settings.stopLevel && (isHard || isComboStop)
 
   setSensorStatus($, `spank: ${n} this session, last L${slap.level} (${slap.peak.toFixed(2)}g)`)
 
   const { captions } = voiceOf()
   const line = captions[level - 1] ?? captions[0]
-  // One slap toast at a time, so a flurry does not stack them, unless the
-  // combo climbs past the level showing; a stop always says so.
-  if (isStopping || toast === undefined || now - toast.at >= TOAST_MS || level > toast.level) {
-    toast = { at: now, level }
-    $.ui.toast(isStopping ? `Stopped Claude. L${level}` : `${line} L${level}`, { timeoutMs: TOAST_MS })
+  // A combo puts up a toast as it starts (unless one as hard is showing) and
+  // one when it ends, saying how far it got, not one per slap; a stop always
+  // says so.
+  // The end toast waits for a second with no slap; one still to come when a
+  // new combo starts is the last one's, shown then.
+  const inRow = combo.count
+  settleComboEnd(inRow === 1)
+  if (inRow > 1 && !isStopping) {
+    const text = `${line} L${level}, ${inRow} in a row`
+    const show = async () => {
+      comboEnd = undefined
+      if (calibration !== undefined || !(await isActive($))) return
+      showToast($, await $.clock.now(), level, text)
+    }
+    comboEnd = { timer: $.clock.after(COMBO_MS, () => void show().catch(() => {})), show }
   }
-  if ((await $.store.get('muted')) !== true) voice($, level)
-  await showFace($, { level, peak: slap.peak, line, combo: combo.count })
+  if (isStopping) {
+    showToast($, now, level, `Stopped Claude. L${level}`)
+  } else if (inRow === 1 && (toast === undefined || now - toast.at >= TOAST_MS || level > toast.level)) {
+    showToast($, now, level, `${line} L${level}`)
+  }
+  if ((await $.store.get('muted')) !== true) voice($, level, now)
+  await showFace($, { level, peak: slap.peak, line, combo: inRow })
 
   if (!isClaudeOn) return
   if (burst.length === 0) burstSince = now
@@ -599,8 +639,9 @@ export const register: Register = (on, options) => {
   burstSince = 0
   cancelBurstTimer()
   combo = undefined
+  settleComboEnd(false)
   toast = undefined
-  playing?.abort()
+  playing?.stop.abort()
   playing = undefined
   faceTimer?.cancel()
   faceTimer = undefined

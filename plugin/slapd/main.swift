@@ -22,7 +22,8 @@ import IOKit.hid
 struct Config {
     var out: String?
     var threshold = 0.05   // g of dynamic acceleration that counts as a hit
-    var cooldown = 0.35    // s between two hits
+    var cooldown = 0.08    // s between two hits, at the least
+    var ringing = 0.5      // s past which shaking after a hit is not its ringing
     var window = 0.06      // s after the trigger to find the peak
     var raw = false
 }
@@ -95,6 +96,13 @@ func num(_ v: Double) -> NSDecimalNumber { NSDecimalNumber(string: String(format
 // Gravity is tracked with a slow low-pass per axis; what is left is the
 // dynamic acceleration. A hit is that magnitude crossing the threshold (and
 // well above the running noise floor), then the peak within a short window.
+// A hit leaves the chassis ringing, so the next one counts only once that
+// ringing (the shaking's envelope, which follows its peaks) has died back
+// well under the bar; "well under" keeps ringing that hovers at the bar from
+// counting twice. The noise floor learns from what stays under the bar, and
+// not from a hit's ringing, so a soft tap right after a hard slap still
+// counts; shaking that outlasts any ringing (a train, a washer) it learns
+// from too, raising the bar until the detector re-arms above it.
 final class Detector {
     let cfg: Config
     let sink: Sink
@@ -107,6 +115,8 @@ final class Detector {
     var eventStart: Double?
     var eventPeak = 0.0
     var lastHit = -1.0
+    var envelope = 0.0
+    var isArmed = true
 
     var rawPeak = 0.0
     var rawSince = 0.0
@@ -133,6 +143,7 @@ final class Detector {
         gravity[2] += a * (z - gravity[2])
         let dx = x - gravity[0], dy = y - gravity[1], dz = z - gravity[2]
         let mag = (dx * dx + dy * dy + dz * dz).squareRoot()
+        envelope = max(mag, envelope * exp(-dt / 0.05))
 
         if cfg.raw {
             rawPeak = max(rawPeak, mag)
@@ -153,15 +164,17 @@ final class Detector {
                 ])
                 eventStart = nil
                 lastHit = t
+                isArmed = false
             }
             return
         }
 
-        let isHit = mag > max(cfg.threshold, noise * 6) && t - lastHit > cfg.cooldown
-        if isHit {
+        let bar = max(cfg.threshold, noise * 6)
+        if !isArmed && envelope < bar * 0.7 { isArmed = true }
+        if isArmed && mag > bar && t - lastHit > cfg.cooldown {
             eventStart = t
             eventPeak = mag
-        } else {
+        } else if mag <= bar || (!isArmed && t - lastHit > cfg.ringing) {
             noise += (1 - exp(-dt / 2.0)) * (mag - noise)
         }
     }
